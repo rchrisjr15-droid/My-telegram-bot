@@ -875,7 +875,9 @@ def home():
     return "Bot is alive and running!"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    # This line tells Flask to use the port Render provides, or 8080 as a backup.
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 
 
