@@ -7,3 +7,4 @@ supermemo2
 flask
 requests
 nest-asyncio
+pandas

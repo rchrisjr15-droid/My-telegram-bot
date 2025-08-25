@@ -1,3 +1,4 @@
+import pandas as pd
 import os
 import json
 import sqlite3
@@ -28,7 +29,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters,
+    Filters,
     ConversationHandler,
 )
 from telegram import MessageEntity
@@ -585,8 +586,48 @@ Return ONLY a single, valid JSON object, with the correct answer as option "A".
         return ConversationHandler.END
 
 
-   
+    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handles receiving a CSV file for import."""
+        # Note: Added 'self' since it's a method of the class
+        file_name = update.message.document.file_name
+        await update.message.reply_text(f"Received {file_name}. Processing now...")
 
+        try:
+            # Download the file
+            csv_file = await update.message.document.get_file()
+            file_path = await csv_file.download_to_drive()
+
+            # Read the CSV using pandas
+            df = pd.read_csv(file_path)
+
+            # TODO: Add logic to loop through the dataframe (df)
+            # and insert the questions into the database using self.db.add_question
+            
+            # For example:
+            # user_id = update.effective_user.id
+            # for index, row in df.iterrows():
+            #     question_data = {
+            #         'question': row['Question'],
+            #         'option_a': row['Option A'],
+            #         'option_b': row['Option B'],
+            #         'option_c': row['Option C'],
+            #         'option_d': row['Option D'],
+            #         'correct_option': row['Correct Option'],
+            #         'explanation': row.get('Explanation', ''),
+            #         'tags': row.get('Tags', ''),
+            #         'subject': row.get('Subject', '')
+            #     }
+            #     self.db.add_question(user_id, question_data)
+
+            record_count = len(df)
+            await update.message.reply_text(f"✅ Success! Imported {record_count} records from {file_name}.")
+
+        except Exception as e:
+            logger.error(f"Error processing CSV: {e}")
+            await update.message.reply_text(f"❌ Sorry, an error occurred while processing the file: {e}")
+    
+
+   
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.clear()
         await update.message.reply_text("Operation cancelled.")
@@ -918,7 +959,10 @@ def main():
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
+
+application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
+
+application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
         
         logger.info("🚀 NEET PG Bot started successfully!")
