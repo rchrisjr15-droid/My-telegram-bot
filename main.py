@@ -29,7 +29,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    Filters,
+    filters,
     ConversationHandler,
 )
 from telegram import MessageEntity
@@ -920,8 +920,6 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-
-
 def main():
     """Starts and runs the bot."""
     # The 'try' block groups the main bot logic for error handling.
@@ -936,12 +934,12 @@ def main():
         # Handler for conversations started by sending text or an image.
         unified_conv_handler = ConversationHandler(
             entry_points=[
-                MessageHandler(Filters.TEXT & ~Filters.COMMAND, bot_instance.handle_text),
-                MessageHandler(Filters.PHOTO, bot_instance.handle_photo)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_text),
+                MessageHandler(filters.PHOTO, bot_instance.handle_photo)
             ],
             states={
-                bot_instance.GET_TEXT_COUNT: [MessageHandler(Filters.Regex(r'^\d+$'), bot_instance.receive_count_for_text)],
-                bot_instance.GET_IMAGE_COUNT: [MessageHandler(Filters.Regex(r'^\d+$'), bot_instance.receive_count_for_image)],
+                bot_instance.GET_TEXT_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_text)],
+                bot_instance.GET_IMAGE_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_image)],
             },
             fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
         )
@@ -960,11 +958,10 @@ def main():
         application.add_handler(review_conv_handler)
         
         # Add all other standard command and callback handlers.
-        # These must all be indented at the same level.
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(MessageHandler(Filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
+        application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
         
@@ -973,10 +970,11 @@ def main():
         # Start polling for updates from Telegram.
         application.run_polling()
         
-    # This 'except' block must be aligned with the 'try' statement.
     except Exception as e:
         logger.error(f"Fatal error in main: {e}")
 
 # This ensures the 'main' function is called only when the script is executed directly.
 if __name__ == '__main__':
     main()
+
+
