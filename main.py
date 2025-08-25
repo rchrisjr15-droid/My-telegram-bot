@@ -594,8 +594,7 @@ Return ONLY a single, valid JSON object, with the correct answer as option "A".
         )
 
     async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handles receiving a CSV file for import."""
-        # Note: Added 'self' since it's a method of the class
+        """Handles receiving a CSV file for import. (SAFE TEST VERSION)"""
         file_name = update.message.document.file_name
         await update.message.reply_text(f"Received {file_name}. Processing now...")
 
@@ -607,10 +606,8 @@ Return ONLY a single, valid JSON object, with the correct answer as option "A".
             # Read the CSV using pandas
             df = pd.read_csv(file_path)
 
-            # TODO: Add logic to loop through the dataframe (df)
-            # and insert the questions into the database using self.db.add_question
-            
-            # For example:
+            # --- DATABASE LOGIC IS COMMENTED OUT FOR THIS TEST ---
+            # This is the part that is likely failing.
             # user_id = update.effective_user.id
             # for index, row in df.iterrows():
             #     question_data = {
@@ -625,13 +622,15 @@ Return ONLY a single, valid JSON object, with the correct answer as option "A".
             #         'subject': row.get('Subject', '')
             #     }
             #     self.db.add_question(user_id, question_data)
+            # ---------------------------------------------------
 
             record_count = len(df)
-            await update.message.reply_text(f"✅ Success! Imported {record_count} records from {file_name}.")
+            await update.message.reply_text(f"✅ TEST SUCCESS! File is readable and has {record_count} records.")
 
         except Exception as e:
             logger.error(f"Error processing CSV: {e}")
-            await update.message.reply_text(f"❌ Sorry, an error occurred while processing the file: {e}")
+            await update.message.reply_text(f"❌ An error occurred: {e}")
+
     
 
    
