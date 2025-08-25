@@ -964,14 +964,12 @@ def main():
         application.add_handler(review_conv_handler)
         
         # Add all other standard command and callback handlers.
+        # All of these must be indented to the same level.
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(CommandHandler("cancel",
-bot_instance.cancel_command))        
         application.add_handler(CommandHandler("import", bot_instance.import_command))
-        
-application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
+        application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
         
@@ -980,6 +978,7 @@ application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bo
         # Start polling for updates from Telegram.
         application.run_polling()
         
+    # This 'except' block must be aligned with the 'try' statement.
     except Exception as e:
         logger.error(f"Fatal error in main: {e}")
 
