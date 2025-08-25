@@ -585,6 +585,12 @@ Return ONLY a single, valid JSON object, with the correct answer as option "A".
         
         return ConversationHandler.END
 
+    async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Asks the user to send a CSV file for importing."""
+        await update.message.reply_text(
+            "Ready to import! Please send your .csv file as a document.\n\n"
+            "Make sure it has the columns: 'Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option'."
+        )
 
     async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handles receiving a CSV file for import."""
@@ -961,7 +967,11 @@ def main():
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
+        application.add_handler(CommandHandler("cancel",
+bot_instance.cancel_command))        
+        application.add_handler(CommandHandler("import", bot_instance.import_command))
+        
+application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
         
