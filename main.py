@@ -381,9 +381,10 @@ class NEETPGBot:
    - I'll ask how many questions you want and then generate them.
 
 **Commands:**
-📊 /stats  🔄 /review  📤 /export  ❌ /cancel
+📊 /stats  🔄 /review  📤 /export  📥 /import  ❌ /cancel
         """
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
     
     # NEW: This function now starts a conversation for photos
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
