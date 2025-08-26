@@ -306,7 +306,6 @@ class ImageProcessor:
         try:
             image = Image.open(io.BytesIO(image_bytes))
 
-            # MODIFIED: A rewritten, clearer prompt that correctly handles all cases.
             prompt = """
 You are an expert AI assistant for a medical student. Your task is to analyze an image, classify it, and then follow the specific instructions for that type to return a precise JSON object.
 
@@ -345,10 +344,22 @@ First, classify the image into one of two types:
 }
 """
             response = model.generate_content([prompt, image])
-            response_text = response.text.strip().replace("`", "")
-            logger.info(f"AI Image Analysis Response: {response_text}")
+            
+            # --- START OF THE FIX ---
+            response_text = response.text
+            
+            # Find the first curly brace '{' to locate the start of the actual JSON data
+            json_start_index = response_text.find('{')
+            
+            # If a '{' is found, slice the string from that point onwards
+            if json_start_index != -1:
+                response_text = response_text[json_start_index:]
+            # --- END OF THE FIX ---
+
+            logger.info(f"AI Image Analysis Response (Cleaned): {response_text}")
             try:
-                return json.loads(response_text)
+                # Remove any leftover backticks for safety before decoding
+                return json.loads(response_text.replace("`", ""))
             except json.JSONDecodeError as e:
                 logger.error(f"JSON Decode Error: {e}\nRaw Response: {response_text}")
                 return None
@@ -356,6 +367,7 @@ First, classify the image into one of two types:
         except Exception as e:
             logger.error(f"Image analysis error: {e}")
             return None
+
 
 
 class NEETPGBot:
