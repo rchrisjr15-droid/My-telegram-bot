@@ -837,20 +837,23 @@ def main():
             fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
         )
 
-        # The corrected handler for the /review command conversation.
-        review_conv_handler = ConversationHandler(
+                # The corrected handler for the /review command conversation.
+            review_conv_handler = ConversationHandler(
             entry_points=[CommandHandler("review", bot_instance.review_command)],
             states={
                 bot_instance.SELECT_REVIEW_TAG: [
-                    CallbackQueryHandler(bot_instance.handle_review_menu_callback)
+                    # ADDED pattern to make the handler specific
+                    CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
                 ],
                 bot_instance.SELECT_HALT_STATUS: [
-                    CallbackQueryHandler(bot_instance.select_halt_status_callback)
+                    # ADDED pattern to make the handler specific
+                    CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
                 ],
             },
             fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
             per_message=False
         )
+
         
         # Add the conversation handlers to the application.
         application.add_handler(unified_conv_handler)
