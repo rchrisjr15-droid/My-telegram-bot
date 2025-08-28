@@ -838,7 +838,7 @@ def main():
         )
 
                 # The corrected handler for the /review command conversation.
-            review_conv_handler = ConversationHandler(
+        review_conv_handler = ConversationHandler(
             entry_points=[CommandHandler("review", bot_instance.review_command)],
             states={
                 bot_instance.SELECT_REVIEW_TAG: [
