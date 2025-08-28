@@ -324,36 +324,27 @@ class ImageProcessor:
     with support for additional user prompts and option shuffling.
     """
 
-    # --- NEW HELPER METHOD FOR SHUFFLING ---
     def _shuffle_options(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Shuffles the options of an MCQ and updates the correct_option letter.
         """
         options = []
-        # Gather all provided options into a list
         for key in ['option_a', 'option_b', 'option_c', 'option_d', 'option_e']:
             if data.get(key):
                 options.append(data[key])
 
         if not options or not data.get("correct_option"):
-            return data # Cannot shuffle if options or correct key are missing
+            return data
 
-        # Identify the text of the correct answer before shuffling
         correct_option_letter = data.get("correct_option", "A").upper()
         correct_option_index = ord(correct_option_letter) - ord('A')
         
         if correct_option_index < 0 or correct_option_index >= len(options):
-            # logger.warning(f"Correct option '{correct_option_letter}' is invalid for the number of options. Skipping shuffle.")
             return data
             
         correct_answer_text = options[correct_option_index]
-
-        # Shuffle the list of options
         random.shuffle(options)
-
-        # Re-assign the shuffled options and find the new correct letter
         new_correct_letter = ""
-        # Clear old option keys before setting new ones
         for i in range(5): data.pop(f"option_{chr(ord('a') + i)}", None)
 
         for i, option_text in enumerate(options):
@@ -363,52 +354,52 @@ class ImageProcessor:
                 new_correct_letter = chr(ord('A') + i)
         
         data["correct_option"] = new_correct_letter
-        # logger.info(f"Options shuffled. New correct option: {new_correct_letter}")
         return data
 
-    # --- MODIFIED CORE METHOD ---
     async def analyze_image(self, image_bytes: bytes, additional_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
         try:
             image = Image.open(io.BytesIO(image_bytes))
 
-            # This new prompt is much more powerful and includes all your feature requests.
+            # --- START OF CORRECTED PROMPT ---
             prompt = f"""
-You are an expert AI assistant for a medical student. Your primary task is to analyze an image and create a structured JSON output.
+You are an expert AI assistant for a medical student. Your task is to analyze an image, classify it, and return a precise JSON object based on the rules below.
 
-**IMPORTANT USER INSTRUCTION:** You MUST follow this additional instruction if provided: '{additional_prompt if additional_prompt else "None"}'
+**IMPORTANT USER INSTRUCTION:** You MUST consider this additional instruction if provided: '{additional_prompt if additional_prompt else "None"}'
 
 First, classify the image into one of three types:
 1. "MCQ_SCREENSHOT": A screenshot of a pre-existing Multiple Choice Question.
 2. "INFORMATIONAL_TEXT": A page of text, notes, or a table for studying.
-3. "LABELED_DIAGRAM": An anatomical or scientific image with parts labeled (e.g., with arrows or lines).
+3. "LABELED_DIAGRAM": An anatomical or scientific image with parts labeled.
 
 ---
-**IF "MCQ_SCREENSHOT":**
-1.  **Find Correct Answer:** Find the correct option via visual cues (green highlight, checkmark ✓, "Correct").
-2.  **Return JSON:**
+**IF "MCQ_SCREENSHOT", FOLLOW THESE RULES:**
+1.  **Extract the MCQ:** Find the question, all options, and the correct answer indicated by a visual cue (green highlight, checkmark ✓, "Correct").
+2.  **Return this exact JSON format:**
     {{
-      "type": "mcq", "data": {{ "question": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "LETTER", "subject": "..." }}
+      "type": "mcq",
+      "data": {{ "question": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "LETTER", "subject": "..." }}
     }}
 
 ---
-**IF "INFORMATIONAL_TEXT":**
-1.  **Generate a high-yield MCQ** based on the most important information in the text.
-2.  **Prioritize User Prompt:** The generated question should be guided by the user's additional instruction.
-3.  **Return JSON:**
+**IF "INFORMATIONAL_TEXT", FOLLOW THESE RULES: (This is corrected)**
+1.  **Extract All Text:** Your ONLY job is to extract all the relevant text from the image.
+2.  **Return this exact JSON format:** This format signals that questions should be generated from the content.
     {{
-      "type": "mcq", "data": {{ "question": "Generated question...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "The correct answer", "correct_option": "Correct letter", "subject": "..." }}
+      "type": "text",
+      "data": {{ "content": "All the extracted text from the image." }}
     }}
 
 ---
-**IF "LABELED_DIAGRAM":**
-1.  **Goal:** Create a "What is the indicated structure?" question.
-2.  **Analyze:** Identify one labeled part. The question should describe the location of the label (e.g., "What structure is indicated by the arrow pointing to the superior pole of the kidney?").
-3.  **Options:** The correct answer is the name of the labeled part. Other options should be plausible but incorrect structures from the same anatomical region.
-4.  **Return JSON:**
+**IF "LABELED_DIAGRAM", FOLLOW THESE RULES: (This is corrected)**
+1.  **Describe the Image:** Your ONLY job is to describe the image and its labels in text form. For example: "A diagram of the heart showing the aorta, left ventricle, and right atrium."
+2.  **Return this exact JSON format:** This format signals that questions should be generated from the content.
     {{
-      "type": "mcq", "data": {{ "question": "Question describing the label's location...", "option_a": "Plausible wrong answer", "option_b": "Correct answer", "option_c": "...", "option_d": "...", "correct_option": "B", "subject": "Anatomy" }}
+      "type": "text",
+      "data": {{ "content": "A text description of the labeled diagram, including all the labels." }}
     }}
 """
+            # --- END OF CORRECTED PROMPT ---
+            
             response = model.generate_content([prompt, image])
             
             response_text = response.text
@@ -420,56 +411,47 @@ First, classify the image into one of three types:
                 
                 parsed_json = json.loads(json_str)
 
-                # Automatically shuffle options for any generated or extracted MCQ
+                # Only shuffle options if an MCQ is being directly extracted
                 if parsed_json.get("type") == "mcq" and parsed_json.get("data"):
                     parsed_json["data"] = self._shuffle_options(parsed_json["data"])
                 
                 return parsed_json
             else:
-                # logger.error(f"Could not find a complete JSON object in the response: {response_text}")
                 return None
 
         except Exception as e:
-            # logger.error(f"Image analysis error: {e}", exc_info=True)
             return None
 
 
 
 
 class NEETPGBot:
-
     def __init__(self):
         self.db = DatabaseManager()
         self.processor = ImageProcessor()
         self.current_questions = {}
-        # MODIFIED: Add a new state for the second level of the review menu
         self.GET_TEXT_COUNT, self.GET_IMAGE_COUNT, self.SELECT_REVIEW_TAG, self.SELECT_HALT_STATUS = range(4)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_text = """
 🩺 **Welcome to NEET PG MCQ Bot!**
-
 **How it works:**
 1. 📸 **Send any image:**
    - Add a caption to give special instructions to the AI.
    - Use #hashtags in the caption to automatically tag the question.
    - The AI can now create questions from labeled diagrams!
-
 2. 📝 **Send a topic** (e.g., "Anatomy of the heart"):
    - I'll ask how many questions you want and then generate them.
-
 **Commands:**
 📊 /stats  🔄 /review  📤 /export  📥 /import  ❌ /cancel
         """
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
-    # MODIFIED: handle_photo now supports additional prompts and saves the image ID
+    # THIS METHOD IS NOW CORRECTED
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("--- handle_photo triggered ---")
         user_id = update.effective_user.id
         photo = update.message.photo[-1]
-        
-        # The caption now serves as the 'additional_prompt' for the AI
         caption = update.message.caption or ""
         
         # Extract hashtags for auto-tagging
@@ -478,14 +460,21 @@ class NEETPGBot:
                     if entity.type == MessageEntity.HASHTAG]
         tags = " ".join(hashtags)
         
-        processing_msg = await update.message.reply_text("📸 Analyzing your image...")
+        # --- START OF FIX ---
+        # Create a clean version of the caption without hashtags to send to the AI
+        clean_caption = caption
+        for tag in hashtags:
+            clean_caption = clean_caption.replace(tag, "")
+        clean_caption = clean_caption.strip()
+        # --- END OF FIX ---
         
+        processing_msg = await update.message.reply_text("📸 Analyzing your image...")
         try:
             file = await context.bot.get_file(photo.file_id)
             file_bytes = await file.download_as_bytearray()
             
-            # MODIFIED: Pass the caption as the additional_prompt
-            analysis_result = await self.processor.analyze_image(bytes(file_bytes), additional_prompt=caption)
+            # Pass the CLEAN caption as the additional_prompt
+            analysis_result = await self.processor.analyze_image(bytes(file_bytes), additional_prompt=clean_caption)
 
             if not analysis_result or 'type' not in analysis_result or 'data' not in analysis_result:
                 await processing_msg.edit_text("❌ Could not understand the image. Please try a clearer one.")
@@ -493,19 +482,12 @@ class NEETPGBot:
 
             if analysis_result['type'] == 'mcq':
                 question_data = analysis_result['data']
-                
                 if tags:
                     question_data['tags'] = tags
-                
-                # NEW: Save the Telegram file_id to associate the image with the question
                 question_data['source_image_id'] = photo.file_id
-                
                 question_id = self.db.add_question(user_id, question_data)
                 await processing_msg.delete()
-                
-                # Pass the full question data, including the new image ID
                 await self.send_quiz(update.effective_chat, question_data, question_id)
-                
                 await update.message.reply_text(f"✅ **MCQ Extracted & Saved!**\n📚 Subject: {question_data.get('subject', 'N/A')}")
                 return ConversationHandler.END
 
@@ -514,166 +496,126 @@ class NEETPGBot:
                 if not extracted_text.strip():
                     await processing_msg.edit_text("❌ I found the image type but could not extract any text.")
                     return ConversationHandler.END
-                
                 context.user_data['image_text'] = extracted_text
                 if tags:
                     context.user_data['image_tags'] = tags
-                
                 await processing_msg.edit_text(f"✅ Text extracted successfully!\n\nHow many MCQs would you like to create from this text? (1-10)")
                 return self.GET_IMAGE_COUNT
-
             else:
                 await processing_msg.edit_text("❌ Unrecognized image type.")
                 return ConversationHandler.END
-
         except Exception as e:
             logger.error(f"Photo processing error: {e}", exc_info=True)
             await processing_msg.edit_text(f"❌ **Processing Error**\n\nAn unexpected error occurred.")
             return ConversationHandler.END
 
-    # MODIFIED: send_quiz can now send an associated image
     async def send_quiz(self, chat, question_data: Dict[str, Any], question_id: int):
-        # NEW: Check if there's an image to send with the question
         if question_data.get('source_image_id'):
             await chat.send_photo(photo=question_data['source_image_id'])
-
         keyboard = [
             [InlineKeyboardButton("A", callback_data=f"answer_A_{question_id}"), InlineKeyboardButton("B", callback_data=f"answer_B_{question_id}")],
             [InlineKeyboardButton("C", callback_data=f"answer_C_{question_id}"), InlineKeyboardButton("D", callback_data=f"answer_D_{question_id}")],
             [InlineKeyboardButton("Delete 🗑️", callback_data=f"delete_{question_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         q_text = question_data.get('question_text', question_data.get('question', ''))
         tags_line = f"\n🔖 **Tags:** {question_data['tags']}" if question_data.get('tags') else ""
-
         quiz_text = f"""
 ❓ **Question:**
 {q_text}
-
 A) {question_data.get('option_a', 'N/A')}
 B) {question_data.get('option_b', 'N/A')}
 C) {question_data.get('option_c', 'N/A')}
 D) {question_data.get('option_d', 'N/A')}
-
 📚 **Subject:** {question_data.get('subject', 'N/A')}{tags_line}
         """
         self.current_questions[question_id] = question_data
         await chat.send_message(quiz_text, reply_markup=reply_markup)
 
-    # MODIFIED: The helper function for review questions also sends images now
     async def _send_next_review_question(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         review_session_questions = context.user_data.get('review_session', [])
-
         if review_session_questions:
             question_data = review_session_questions.pop(0)
             question_id = question_data['id']
-            # We use effective_chat to send messages, which works for both commands and callbacks
             await self.send_quiz(update.effective_chat, question_data, question_id)
         else:
             await update.effective_chat.send_message("🎉 **Review session complete!** You've answered all due questions. Great job!")
             if 'review_session' in context.user_data:
                 del context.user_data['review_session']
     
-    # --- NEW & REWRITTEN REVIEW COMMANDS ---
-
-    # NEW: A helper function to start any review session to avoid repeating code
     async def _start_review_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE, questions: list, description: str):
         query = update.callback_query
         if not questions:
             await query.edit_message_text(f"🎉 No questions are due for review in **{description}**. Great job!")
             return ConversationHandler.END
-        
         context.user_data['review_session'] = questions
         count = len(questions)
         await query.edit_message_text(f"🚀 Starting review for **{description}**. You have **{count}** questions due. Let's begin!", parse_mode='Markdown')
         await self._send_next_review_question(update, context)
         return ConversationHandler.END
 
-    # MODIFIED: review_command now shows the new top-level menu
     async def review_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
         tags = self.db.get_unique_tags(user_id)
         has_untagged = self.db.has_untagged_questions(user_id)
-
         keyboard = [
             [InlineKeyboardButton("🚀 Review All Non-Halted Cards", callback_data="review_all:non_halted")],
             [InlineKeyboardButton("📚 Review All Halted Cards", callback_data="review_all:halted")]
         ]
-        
         if tags or has_untagged:
             keyboard.append([InlineKeyboardButton("--- OR CHOOSE A TAG ---", callback_data="noop")])
-
         for tag in tags:
             keyboard.append([InlineKeyboardButton(f"🔖 {tag}", callback_data=f"select_tag:{tag}")])
-        
         if has_untagged:
             keyboard.append([InlineKeyboardButton("📄 Untagged Questions", callback_data="select_tag:__UNTAGGED__")])
-
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Please choose a review category:", reply_markup=reply_markup)
-        
         return self.SELECT_REVIEW_TAG
 
-    # MODIFIED: This function now acts as a router for the main review menu
     async def handle_review_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
         callback_data = query.data
-
         if callback_data.startswith("review_all:"):
             halt_status = callback_data.split(':')[1]
             questions = self.db.get_due_questions(user_id, tag=None, halt_status=halt_status)
             description = f"All {halt_status.replace('_', ' ')} cards"
             return await self._start_review_session(update, context, questions, description)
-
         elif callback_data.startswith("select_tag:"):
             tag = callback_data.split(':', 1)[1]
             tag_name = "Untagged" if tag == '__UNTAGGED__' else tag
-            
-            context.user_data['selected_tag'] = tag # Store the tag for the next step
-
+            context.user_data['selected_tag'] = tag
             keyboard = [
                 [InlineKeyboardButton("▶️ Non-Halted Cards", callback_data=f"review_status:non_halted")],
                 [InlineKeyboardButton("⏸️ Halted Cards (Reviewed 3+ times)", callback_data=f"review_status:halted")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(f"Reviewing **{tag_name}**. Which cards do you want to see?", reply_markup=reply_markup, parse_mode='Markdown')
-            
-            return self.SELECT_HALT_STATUS # Move to the next state
-        
+            return self.SELECT_HALT_STATUS
         elif callback_data == "noop":
-            return self.SELECT_REVIEW_TAG # Do nothing, wait for a real choice
+            return self.SELECT_REVIEW_TAG
 
-    # NEW: This function handles the second menu (choosing halt status for a specific tag)
     async def select_halt_status_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
-        
         halt_status = query.data.split(':')[1]
         tag = context.user_data.pop('selected_tag', None)
-
         if not tag:
             await query.edit_message_text("❌ An error occurred. Please start the review again with /review.")
             return ConversationHandler.END
-
         questions = self.db.get_due_questions(user_id, tag=tag, halt_status=halt_status)
         tag_name = "Untagged" if tag == '__UNTAGGED__' else tag
         description = f"{halt_status.replace('_', ' ')} cards in '{tag_name}'"
         return await self._start_review_session(update, context, questions, description)
-        
-    # --- UNCHANGED EXISTING METHODS ---
 
     async def receive_count_for_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_text = context.user_data.pop('image_text', None)
         tags = context.user_data.pop('image_tags', "")
-
         if not extracted_text:
             await update.message.reply_text("🤔 Something went wrong. Please send the image again.")
             return ConversationHandler.END
-
         try:
             count = int(update.message.text)
             if not 1 <= count <= 10:
@@ -686,7 +628,6 @@ D) {question_data.get('option_d', 'N/A')}
             context.user_data['image_text'] = extracted_text
             if tags: context.user_data['image_tags'] = tags
             return self.GET_IMAGE_COUNT
-
         return await self.generate_mcqs_loop(update, context, extracted_text, count, tags=tags)
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -700,7 +641,6 @@ D) {question_data.get('option_d', 'N/A')}
         if not topic:
             await update.message.reply_text("🤔 Something went wrong. Please send the topic again.")
             return ConversationHandler.END
-        
         try:
             count = int(update.message.text)
             if not 1 <= count <= 10:
@@ -711,102 +651,78 @@ D) {question_data.get('option_d', 'N/A')}
             await update.message.reply_text("That doesn't look like a valid number. Please try again.")
             context.user_data['topic'] = topic
             return self.GET_TEXT_COUNT
-        
         return await self.generate_mcqs_loop(update, context, topic, count, tags="")
 
     async def generate_mcqs_loop(self, update: Update, context: ContextTypes.DEFAULT_TYPE, source_text: str, count: int, tags: str = "") -> int:
         user_id = update.effective_user.id
         await update.message.reply_text(f"⚡ Creating {count} distinct MCQ(s) for you. This may take a moment...")
-        
         questions_generated = 0
         generated_questions_text = []
-
         for i in range(count):
             try:
                 prompt_addition = ""
                 if generated_questions_text:
                     previous_qs = "\n".join(f"- \"{q}\"" for q in generated_questions_text)
                     prompt_addition = f"IMPORTANT: You have already generated the questions listed below. DO NOT repeat them... Previously Generated Questions:\n{previous_qs}"
-                
                 prompt = f"""Create a unique, high-quality NEET PG medical MCQ based on the following text: {source_text}. {prompt_addition} Return ONLY a single, valid JSON object, with the correct answer as option "A". {{"question": "...", "option_a": "...", "option_b": "...", "option_c": "...", "option_d": "...", "correct_option": "A", "explanation": "...", "subject": "..."}}"""
                 generation_config = {"temperature": 0.8}
-                
                 response = model.generate_content(prompt, generation_config=generation_config)
                 response_text = response.text.strip().replace("```json", "").replace("```", "")
-                
                 logger.info(f"AI Raw Response #{i+1}: {response_text}")
                 question_data = json.loads(response_text)
-                
                 generated_questions_text.append(question_data['question'])
                 correct_answer_text = question_data['option_a']
                 options = [question_data['option_a'], question_data['option_b'], question_data['option_c'], question_data['option_d']]
                 random.shuffle(options)
-
                 question_data['option_a'] = options[0]
                 question_data['option_b'] = options[1]
                 question_data['option_c'] = options[2]
                 question_data['option_d'] = options[3]
-
                 new_correct_index = options.index(correct_answer_text)
                 question_data['correct_option'] = ['A', 'B', 'C', 'D'][new_correct_index]
-                
                 if tags:
                     question_data['tags'] = tags
-
                 question_id = self.db.add_question(user_id, question_data)
                 await self.send_quiz(update.effective_chat, question_data, question_id)
                 questions_generated += 1
                 await asyncio.sleep(1)
-
             except Exception as e:
                 logger.error(f"Text processing error on iteration {i+1}: {e}")
                 await update.message.reply_text(f"⚠️ Could not generate question #{i+1}. Moving to the next...")
                 continue
-        
         if questions_generated > 0:
             await update.message.reply_text(f"✅ Finished! Generated {questions_generated} out of {count} requested questions.")
         else:
             await update.message.reply_text("❌ Failed to generate any questions from the provided source.")
-        
         return ConversationHandler.END
 
     async def handle_answer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         user_id = query.from_user.id
-        
         parts = query.data.split('_')
         user_answer = parts[1]
         question_id = int(parts[2])
-        
         if question_id not in self.current_questions:
             await query.answer("❌ This question seems to have expired.", show_alert=True)
             await query.edit_message_text("This quiz has expired.")
             return
-        
         question_data = self.current_questions.pop(question_id)
         correct_option = question_data['correct_option']
         is_correct = (user_answer == correct_option)
-        
         self.db.update_srs(user_id, question_id, is_correct)
         self.db.update_user_stats(user_id, is_correct)
-        
         conn = sqlite3.connect(self.db.db_path)
         cursor = conn.cursor()
         cursor.execute('INSERT INTO answer_history (user_id, question_id, user_answer, is_correct) VALUES (?, ?, ?, ?)', (user_id, question_id, user_answer, is_correct))
         conn.commit()
         conn.close()
-        
         response = f"✅ **Correct!** Excellent work! 🎉\n\n" if is_correct else f"❌ **Wrong.** The correct answer was **{correct_option}**.\n\n"
-        
         explanation = question_data.get('explanation', '')
         if explanation:
             response += f"💡 **Explanation:**\n{explanation}\n\n"
-        
         response += "📅 Scheduled for review based on your answer."
-        
         await query.edit_message_text(response, parse_mode='Markdown')
         await query.answer()
-
         if 'review_session' in context.user_data:
             await self._send_next_review_question(update, context)
 
@@ -829,25 +745,20 @@ D) {question_data.get('option_d', 'N/A')}
         conn = sqlite3.connect(self.db.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
         cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
         stats = cursor.fetchone()
-        
         if not stats:
             await update.message.reply_text("📊 No stats yet. Answer some questions first!")
             conn.close()
             return
-        
         total = stats['total_questions']
         correct = stats['correct_answers']
         wrong = stats['wrong_answers']
         current_streak = stats['current_streak']
         best_streak = stats['best_streak']
         accuracy = (correct / total * 100) if total > 0 else 0
-        
         cursor.execute('SELECT COUNT(*) FROM srs_schedule WHERE user_id = ? AND next_review <= ?', (user_id, datetime.now()))
         due_count = cursor.fetchone()[0]
-        
         stats_text = f"📊 **Your Progress**\n\n📈 **Performance:**\n• Total: {total}\n• Correct: {correct} \n• Wrong: {wrong}\n• Accuracy: {accuracy:.1f}%\n\n🔥 **Streaks:**\n• Current: {current_streak}\n• Best: {best_streak}\n\n📅 **Due for review:** {due_count}"
         conn.close()
         await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -859,7 +770,6 @@ D) {question_data.get('option_d', 'N/A')}
             if not csv_data.strip():
                 await update.message.reply_text("📭 No questions to export yet!")
                 return
-            
             filename = f"neet_pg_export_{user_id}_{datetime.now().strftime('%Y%m%d')}.csv"
             await update.message.reply_document(
                 document=io.BytesIO(csv_data.encode('utf-8')),
