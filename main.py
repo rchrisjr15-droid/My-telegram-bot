@@ -906,12 +906,11 @@ def run_flask():
 
 def main():
     """Starts and runs the bot."""
-    # The 'try' block groups the main bot logic for error handling.
     try:
         bot_instance = NEETPGBot()
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         
-        # Start the Flask web server in a separate thread to keep the bot alive on Render.
+        # Start the Flask web server in a separate thread to keep the bot alive.
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
         
@@ -928,29 +927,26 @@ def main():
             fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
         )
 
-        # A separate handler for the /review command conversation.
-        # A separate handler for the /review command conversation.
-    review_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("review", bot_instance.review_command)],
-    states={
-        bot_instance.SELECT_REVIEW_TAG: [
-            CallbackQueryHandler(bot_instance.handle_review_menu_callback)
-        ],
-        bot_instance.SELECT_HALT_STATUS: [
-            CallbackQueryHandler(bot_instance.select_halt_status_callback)
-        ],
-    },
-    fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
-    per_message=False
-)
-
+        # The corrected handler for the /review command conversation.
+        review_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("review", bot_instance.review_command)],
+            states={
+                bot_instance.SELECT_REVIEW_TAG: [
+                    CallbackQueryHandler(bot_instance.handle_review_menu_callback)
+                ],
+                bot_instance.SELECT_HALT_STATUS: [
+                    CallbackQueryHandler(bot_instance.select_halt_status_callback)
+                ],
+            },
+            fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
+            per_message=False
+        )
         
         # Add the conversation handlers to the application.
         application.add_handler(unified_conv_handler)
         application.add_handler(review_conv_handler)
         
         # Add all other standard command and callback handlers.
-        # All of these must be indented to the same level.
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
@@ -964,12 +960,13 @@ def main():
         # Start polling for updates from Telegram.
         application.run_polling()
         
-    # This 'except' block must be aligned with the 'try' statement.
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}")
+        logger.error(f"Fatal error in main: {e}", exc_info=True)
 
 # This ensures the 'main' function is called only when the script is executed directly.
 if __name__ == '__main__':
     main()
+
+
 
 
