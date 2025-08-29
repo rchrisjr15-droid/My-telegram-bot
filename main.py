@@ -828,7 +828,7 @@ def main():
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
         
-        # Handler for conversations started by sending text or an image.
+                # Handler for conversations started by sending text or an image.
         unified_conv_handler = ConversationHandler(
             entry_points=[
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_text),
@@ -838,8 +838,17 @@ def main():
                 bot_instance.GET_TEXT_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_text)],
                 bot_instance.GET_IMAGE_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_image)],
             },
-            fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
+            # THIS FALLBACKS LIST IS NOW CORRECTED to allow interruptions
+            fallbacks=[
+                CommandHandler('cancel', bot_instance.cancel),
+                CommandHandler('start', bot_instance.start_command),
+                CommandHandler('review', bot_instance.review_command),
+                CommandHandler('stats', bot_instance.stats_command),
+                CommandHandler('export', bot_instance.export_command),
+                CommandHandler('import', bot_instance.import_command),
+            ],
         )
+
 
                 # The corrected handler for the /review command conversation.
         review_conv_handler = ConversationHandler(
