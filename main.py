@@ -492,6 +492,7 @@ class NEETPGBot:
                 if tags:
                     question_data['tags'] = tags
                 question_data['source_image_id'] = photo.file_id
+                question_data['is_extracted_mcq'] = True
                 question_id = self.db.add_question(user_id, question_data)
                 await processing_msg.delete()
                 await self.send_quiz(update.effective_chat, question_data, question_id)
@@ -517,7 +518,7 @@ class NEETPGBot:
             return ConversationHandler.END
 
     async def send_quiz(self, chat, question_data: Dict[str, Any], question_id: int):
-        if question_data.get('source_image_id'):
+        if question_data.get('source_image_id') and not question_data.get('is_extracted_mcq', False):
             await chat.send_photo(photo=question_data['source_image_id'])
         keyboard = [
             [InlineKeyboardButton("A", callback_data=f"answer_A_{question_id}"), InlineKeyboardButton("B", callback_data=f"answer_B_{question_id}")],
