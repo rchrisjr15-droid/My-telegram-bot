@@ -869,7 +869,7 @@ All imported questions are scheduled for immediate review!
             "Please send your CSV file with the following columns:\n"
             "• Question\n"
             "• Option A, Option B, Option C, Option D\n"
-            "• Correct Option (A, B, C, or D)\n"
+            "• Correct Option\n"
             "• Explanation (optional)\n"
             "• Tags (optional)\n"
             "• Subject (optional)\n"
