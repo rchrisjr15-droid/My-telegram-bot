@@ -291,36 +291,146 @@ class DatabaseManager:
         conn.close()
         return questions
     
-    def export_questions(self, user_id: int) -> str:
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id FROM questions WHERE user_id = ?', (user_id,))
-        questions = cursor.fetchall()
-        
-        if not questions: return ""
+    
+def export_questions(self, user_id: int) -> str:
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id FROM questions WHERE user_id = ?', (user_id,))
+    questions = cursor.fetchall()
+    
+    if not questions:
+        return ""
 
-        output = StringIO()
-        writer = csv.writer(output)
-        writer.writerow(['Question', 'Option A', 'Option B', 'Option C', 'Option D', 
-                        'Correct Option', 'Explanation', 'Tags', 'Subject', 'Source Image ID'])
-        
-        writer.writerows(questions)
-        conn.close()
-        return output.getvalue()
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Question', 'Option A', 'Option B', 'Option C', 'Option D', 
+                     'Correct Option', 'Explanation', 'Tags', 'Subject', 'Source Image ID'])
+    
+    writer.writerows(questions)
+    conn.close()
+    return output.getvalue()
 
-    def delete_question(self, question_id: int):
-        """Permanently deletes a question and its related data."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM answer_history WHERE question_id = ?", (question_id,))
-        cursor.execute("DELETE FROM srs_schedule WHERE question_id = ?", (question_id,))
-        cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+def import_questions(self, user_id: int, csv_str) -> Dict[str, int]:
+    """
+    Imports questions from CSV data.
+    Returns a dictionary with import statistics.
+    """
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+
+    try:
+        csv_reader = csv.DictReader(StringIO(csv_data))
+        
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        # Define field mapping from CSV headers to database fields
+        field_mapping = {
+            'Question': 'question',
+            'Option A': 'option_a',
+            'Option B': 'option_b',
+            'Option C': 'option_c',
+            'Option D': 'option_d',
+            'Correct Option': 'correct_option',
+            'Explanation': 'explanation',
+            'Tags': 'tags',
+            'Subject': 'subject',
+            'Source Image ID': 'source_image_id'
+        }
+        
+        for row in csv_reader:
+            try:
+                # Check for essential required fields only
+                essential_fields = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option']
+                if not all(field in row and row[field].strip() for field in essential_fields):
+                    skipped_count += 1
+                    continue
+                
+                # Prepare question data with proper mapping
+                question_data = {}
+                for csv_field, db_field in field_mapping.items():
+                    if csv_field in row:
+                        value = row[csv_field].strip()
+                        if db_field == 'source_image_id':
+                            question_data[db_field] = value if value else None
+                        else:
+                            question_data[db_field] = value
+                    else:
+                        # Set defaults for missing optional fields
+                        if db_field in ['explanation', 'tags', 'subject']:
+                            question_data[db_field] = ''
+                        elif db_field == 'source_image_id':
+                            question_data[db_field] = None
+                
+                # Validate correct option
+                if question_data['correct_option'].upper() not in ['A', 'B', 'C', 'D']:
+                    skipped_count += 1
+                    continue
+                
+                # Insert question
+                cursor.execute('''
+                    INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
+                                         correct_option, explanation, tags, subject, source_image_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    user_id,
+                    question_data['question'],
+                    question_data['option_a'],
+                    question_data['option_b'],
+                    question_data['option_c'],
+                    question_data['option_d'],
+                    question_data['correct_option'].upper(),
+                    question_data['explanation'],
+                    question_data['tags'],
+                    question_data['subject'],
+                    question_data['source_image_id']
+                ))
+                
+                question_id = cursor.lastrowid
+                
+                # Add to SRS schedule
+                if question_id:
+                    cursor.execute('''
+                        INSERT INTO srs_schedule (user_id, question_id, next_review)
+                        VALUES (?, ?, ?)
+                    ''', (user_id, question_id, datetime.now()))
+                
+                imported_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error importing question: {e}")
+                error_count += 1
+                continue
+        
         conn.commit()
+        
+        return {
+            'imported': imported_count,
+            'skipped': skipped_count,
+            'errors': error_count,
+            'total': imported_count + skipped_count + error_count
+        }
+        
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"CSV import error: {e}")
+        return {'imported': 0, 'skipped': 0, 'errors': 1, 'total': 0}
+    
+    finally:
         conn.close()
-        logger.info(f"Deleted question with ID: {question_id}")
 
-
+def delete_question(self, question_id: int):
+    """Permanently deletes a question and its related data."""
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM answer_history WHERE question_id = ?", (question_id,))
+    cursor.execute("DELETE FROM srs_schedule WHERE question_id = ?", (question_id,))
+    cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+    conn.commit()
+    conn.close()
+    logger.info(f"Deleted question with ID: {question_id}")
 
 class ImageProcessor:
     """
