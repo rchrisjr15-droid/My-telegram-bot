@@ -83,6 +83,7 @@ class DatabaseManager:
     def init_database(self):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS questions (
@@ -117,14 +118,17 @@ class DatabaseManager:
     def get_unique_tags(self, user_id: int) -> List[str]:
         """Gets a list of all unique tags for a user."""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT DISTINCT tags FROM questions WHERE user_id = ? AND tags IS NOT NULL AND tags != ''",
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT tags FROM questions WHERE user_id = ? AND tags IS NOT NULL AND tags != ''",
             (user_id,)
-        )
-        tags = [row[0] for row in cursor.fetchall()]
-        conn.close()
-        return tags
+            )
+            tags = [row[0] for row in cursor.fetchall()]
+            return tags
+        finally:
+            conn.close()
+
 
     def has_untagged_questions(self, user_id: int) -> bool:
         """Checks if a user has any questions without a tag."""
@@ -852,36 +856,38 @@ def main():
 
                 # The corrected handler for the /review command conversation.
         review_conv_handler = ConversationHandler(
-            entry_points=[CommandHandler("review", bot_instance.review_command)],
-            states={
-                bot_instance.SELECT_REVIEW_TAG: [
-                    # ADDED pattern to make the handler specific
-                    CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
-                ],
-                bot_instance.SELECT_HALT_STATUS: [
-                    # ADDED pattern to make the handler specific
-                    CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
-                ],
-            },
-            fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
-            per_message=False
-        )
+    entry_points=[CommandHandler("review", bot_instance.review_command)],
+    states={
+        bot_instance.SELECT_REVIEW_TAG: [
+            CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
+        ],
+        bot_instance.SELECT_HALT_STATUS: [
+            CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
+        ],
+    },
+    fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
+    per_message=False
+)
 
-        
-        # Add the conversation handlers to the application.
-        application.add_handler(unified_conv_handler)
-        application.add_handler(review_conv_handler)
-        
-        # Add all other standard command and callback handlers.
+# IMPORTANT: Handler order matters! Add handlers in this specific order:
+
+# 1. First, add all command handlers (non-conversation)
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
         application.add_handler(CommandHandler("import", bot_instance.import_command))
+
+# 2. Then add conversation handlers
+        application.add_handler(review_conv_handler)
+        application.add_handler(unified_conv_handler)  # Make sure this comes after review_conv_handler
+
+# 3. Finally, add specific callback and message handlers
         application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
-        
+
         logger.info("🚀 NEET PG Bot started successfully!")
+
         
         # Start polling for updates from Telegram.
         application.run_polling()
