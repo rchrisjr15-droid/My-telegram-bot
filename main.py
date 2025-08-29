@@ -450,6 +450,8 @@ class NEETPGBot:
     # THIS METHOD IS NOW CORRECTED
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("--- handle_photo triggered ---")
+        if 'review_session' in context.user_data:
+            del context.user_data['review_session']
         user_id = update.effective_user.id
         photo = update.message.photo[-1]
         caption = update.message.caption or ""
@@ -632,6 +634,8 @@ D) {question_data.get('option_d', 'N/A')}
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         topic = update.message.text
+        if 'review_session' in context.user_data:
+            del context.user_data['review_session']
         context.user_data['topic'] = topic
         await update.message.reply_text(f"How many MCQs would you like to generate for the topic \"{topic}\"?\n\nPlease send a number (1-10).")
         return self.GET_TEXT_COUNT
