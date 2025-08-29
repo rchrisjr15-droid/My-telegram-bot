@@ -840,42 +840,36 @@ D) {question_data.get('option_d', 'N/A')}
             "• Tags (optional)\n"
             "• Subject (optional)\n"
             "• Source Image ID (optional)\n\n"
-            "Send your CSV file now:",
+            "Send your CSV file now or use /cancel to abort:",
             parse_mode='Markdown'
         )
         return self.WAITING_FOR_CSV
 
-    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # First thing: confirm the handler fired and what file arrived
+    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle the CSV file upload and import questions"""
         logger.info(
             "receive_csv_file triggered | user=%s | file=%s | mime=%s",
             update.effective_user.id,
             getattr(update.message.document, "file_name", None),
             getattr(update.message.document, "mime_type", None),
-    )
+        )
 
         user_id = update.effective_user.id
-        file_name = update.message.document.file_name
-        processing_msg = await update.message.reply_text(f"Received {file_name}. Processing now...")
+        file_name = update.message.document.file_name or "unknown_file"
+        processing_msg = await update.message.reply_text(f"📄 Received {file_name}. Processing now...")
 
         try:
-        # Download the CSV file content
+            # Download the CSV file content
             csv_file = await update.message.document.get_file()
             file_bytes = await csv_file.download_as_bytearray()
             csv_data = file_bytes.decode('utf-8-sig')
 
-        # Optional: validate extension if you want to enforce .csv
-        # if not (file_name or "").lower().endswith(".csv"):
-        #     await processing_msg.edit_text("Please upload a .csv file exported from the bot.")
-        #     return
-
-        # Import questions using the database manager
+            # Import questions using the database manager
             import_stats = self.db.import_questions(user_id, csv_data)
 
-        # Create summary message
+            # Create summary message
             summary = f"""
 ✅ **Import Complete!**
-
 📊 **Results:**
 • ✅ Imported: {import_stats['imported']}
 • ⏭️ Skipped: {import_stats['skipped']}
@@ -883,21 +877,16 @@ D) {question_data.get('option_d', 'N/A')}
 • 📝 Total processed: {import_stats['total']}
 
 All imported questions are scheduled for immediate review!
-        """
+            """
 
             await processing_msg.edit_text(summary, parse_mode='Markdown')
 
         except Exception as e:
             logger.error(f"Error processing CSV: {e}", exc_info=True)
-            await processing_msg.edit_text(f"❌ An error occurred: {e}")
-
+            await processing_msg.edit_text(f"❌ An error occurred while processing the file: {str(e)}")
+        
+        return ConversationHandler.END
     
-    async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Start CSV import and wait for the next uploaded file."""
-        await update.message.reply_text(
-        "📥 Please upload the CSV file now (the same format as /export). Send /cancel to abort."
-        )
-        return self.WAITING_FOR_CSV
 
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -946,7 +935,6 @@ def main():
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(CommandHandler("import", bot_instance.import_command))
 
         # Import conversation: waits for CSV after /import
         import_conv_handler = ConversationHandler(
