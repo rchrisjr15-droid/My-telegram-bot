@@ -675,41 +675,6 @@ D) {question_data.get('option_d', 'N/A')}
         return await self._start_review_session(update, context, questions, description)
     
     
-    
-    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user_id = update.effective_user.id
-        file_name = update.message.document.file_name
-        processing_msg = await update.message.reply_text(f"Received {file_name}. Processing now...")
-
-        try:
-            # Download the CSV file content
-            csv_file = await update.message.document.get_file()
-            file_bytes = await csv_file.download_as_bytearray()
-            csv_data = file_bytes.decode('utf-8-sig')
-    
-            # Import questions using the database manager
-            import_stats = self.db.import_questions(user_id, csv_data)
-    
-            # Create summary message
-            summary = f"""
-✅ **Import Complete!**
-
-📊 **Results:**
-• ✅ Imported: {import_stats['imported']}
-• ⏭️ Skipped: {import_stats['skipped']}
-• ❌ Errors: {import_stats['errors']}
-• 📝 Total processed: {import_stats['total']}
-
-All imported questions are scheduled for immediate review!
-            """
-    
-            await processing_msg.edit_text(summary, parse_mode='Markdown')
-    
-        except Exception as e:
-            # Corrected indentation for the following two lines
-            logger.error(f"Error processing CSV: {e}")
-            await processing_msg.edit_text(f"❌ An error occurred: {e}")
-
 
     async def receive_count_for_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_text = context.user_data.pop('image_text', None)
@@ -880,65 +845,52 @@ All imported questions are scheduled for immediate review!
         )
         return self.WAITING_FOR_CSV
 
-    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # First thing: confirm the handler fired and what file arrived
+        logger.info(
+            "receive_csv_file triggered | user=%s | file=%s | mime=%s",
+            update.effective_user.id,
+            getattr(update.message.document, "file_name", None),
+            getattr(update.message.document, "mime_type", None),
+    )
+
         user_id = update.effective_user.id
-        
-        # Check if it's a document
-        if not update.message.document:
-            await update.message.reply_text("❌ Please send a CSV file as a document.")
-            return self.WAITING_FOR_CSV
-            
         file_name = update.message.document.file_name
-        
-        # Check if it's a CSV file
-        if not file_name.lower().endswith('.csv'):
-            await update.message.reply_text("❌ Please send a CSV file (.csv extension).")
-            return self.WAITING_FOR_CSV
-            
-        processing_msg = await update.message.reply_text(f"📥 Received {file_name}. Processing now...")
+        processing_msg = await update.message.reply_text(f"Received {file_name}. Processing now...")
 
         try:
-            # Download the CSV file content
+        # Download the CSV file content
             csv_file = await update.message.document.get_file()
             file_bytes = await csv_file.download_as_bytearray()
-            
-            # Try different encodings
-            csv_data = None
-            for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
-                try:
-                    csv_data = file_bytes.decode(encoding)
-                    logger.info(f"Successfully decoded CSV with {encoding} encoding")
-                    break
-                except UnicodeDecodeError:
-                    continue
-            
-            if csv_data is None:
-                await processing_msg.edit_text("❌ Could not decode the CSV file. Please ensure it's saved with UTF-8 encoding.")
-                return ConversationHandler.END
-    
-            # Import questions using the database manager
+            csv_data = file_bytes.decode('utf-8-sig')
+
+        # Optional: validate extension if you want to enforce .csv
+        # if not (file_name or "").lower().endswith(".csv"):
+        #     await processing_msg.edit_text("Please upload a .csv file exported from the bot.")
+        #     return
+
+        # Import questions using the database manager
             import_stats = self.db.import_questions(user_id, csv_data)
-    
-            # Create summary message
+
+        # Create summary message
             summary = f"""
 ✅ **Import Complete!**
 
 📊 **Results:**
 • ✅ Imported: {import_stats['imported']}
-• ⏭️ Skipped: {import_stats['skipped']}  
+• ⏭️ Skipped: {import_stats['skipped']}
 • ❌ Errors: {import_stats['errors']}
 • 📝 Total processed: {import_stats['total']}
 
 All imported questions are scheduled for immediate review!
-            """
-    
+        """
+
             await processing_msg.edit_text(summary, parse_mode='Markdown')
-            return ConversationHandler.END
-    
+
         except Exception as e:
             logger.error(f"Error processing CSV: {e}", exc_info=True)
-            await processing_msg.edit_text(f"❌ An error occurred while processing the CSV file: {str(e)}")
-            return ConversationHandler.END
+            await processing_msg.edit_text(f"❌ An error occurred: {e}")
+
     
     async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Start CSV import and wait for the next uploaded file."""
@@ -1001,7 +953,7 @@ def main():
             entry_points=[CommandHandler("import", bot_instance.import_command)],
             states={
                 bot_instance.WAITING_FOR_CSV: [
-                    MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file)
+                    MessageHandler(filters.Document.ALL, bot_instance.receive_csv_file)
                 ]
             },
             fallbacks=[CommandHandler("cancel", bot_instance.cancel)],
