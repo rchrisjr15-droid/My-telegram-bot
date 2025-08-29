@@ -490,7 +490,6 @@ class NEETPGBot:
         self.processor = ImageProcessor()
         self.current_questions = {}
         self.GET_TEXT_COUNT, self.GET_IMAGE_COUNT, self.SELECT_REVIEW_TAG, self.SELECT_HALT_STATUS = range(4)
-        self.IMPORT_WAIT_file = 100
         self.WAITING_FOR_CSV = 101
         
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -946,7 +945,7 @@ All imported questions are scheduled for immediate review!
         await update.message.reply_text(
         "📥 Please upload the CSV file now (the same format as /export). Send /cancel to abort."
         )
-        return self.IMPORT_WAIT_FILE
+        return self.WAITING_FOR_CSV
 
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
