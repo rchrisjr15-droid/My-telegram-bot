@@ -273,40 +273,103 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
+            
+            # Clean the CSV data - remove BOM if present
+            if csv_data.startswith('\ufeff'):
+                csv_data = csv_data[1:]
+            
             csv_reader = csv.DictReader(StringIO(csv_data))
             stats = {'imported': 0, 'skipped': 0, 'errors': 0}
-            field_mapping = {'Question': 'question', 'Option A': 'option_a', 'Option B': 'option_b', 'Option C': 'option_c', 'Option D': 'option_d', 'Correct Option': 'correct_option', 'Explanation': 'explanation', 'Tags': 'tags', 'Subject': 'subject', 'Source Image ID': 'source_image_id'}
-            for row in csv_reader:
+            
+            # Log the fieldnames for debugging
+            logger.info(f"CSV fieldnames: {csv_reader.fieldnames}")
+            
+            field_mapping = {
+                'Question': 'question', 
+                'Option A': 'option_a', 
+                'Option B': 'option_b', 
+                'Option C': 'option_c', 
+                'Option D': 'option_d', 
+                'Correct Option': 'correct_option', 
+                'Explanation': 'explanation', 
+                'Tags': 'tags', 
+                'Subject': 'subject', 
+                'Source Image ID': 'source_image_id'
+            }
+            
+            for row_num, row in enumerate(csv_reader, start=1):
                 try:
+                    logger.info(f"Processing row {row_num}: {dict(row)}")
+                    
+                    # Check essential fields
                     essential = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option']
-                    if not all(field in row and row[field].strip() for field in essential):
+                    missing_fields = [field for field in essential if not row.get(field, '').strip()]
+                    
+                    if missing_fields:
+                        logger.warning(f"Row {row_num} skipped - missing fields: {missing_fields}")
                         stats['skipped'] += 1
                         continue
-                    question_data = {db_field: row.get(csv_field, '').strip() for csv_field, db_field in field_mapping.items()}
-                    if question_data['correct_option'].upper() not in ['A', 'B', 'C', 'D']:
+                    
+                    # Map the fields
+                    question_data = {}
+                    for csv_field, db_field in field_mapping.items():
+                        value = row.get(csv_field, '').strip()
+                        question_data[db_field] = value
+                    
+                    # Validate correct option
+                    correct_option = question_data['correct_option'].upper()
+                    if correct_option not in ['A', 'B', 'C', 'D']:
+                        logger.warning(f"Row {row_num} skipped - invalid correct option: {correct_option}")
                         stats['skipped'] += 1
                         continue
+                    
+                    question_data['correct_option'] = correct_option
+                    
+                    # Insert into database
                     cursor.execute('''
-                        INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id)
+                        INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
+                                             correct_option, explanation, tags, subject, source_image_id)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (user_id, question_data['question'], question_data['option_a'], question_data['option_b'], question_data['option_c'], question_data['option_d'], question_data['correct_option'].upper(), question_data.get('explanation'), question_data.get('tags'), question_data.get('subject'), question_data.get('source_image_id') or None))
+                    ''', (
+                        user_id, 
+                        question_data['question'], 
+                        question_data['option_a'], 
+                        question_data['option_b'], 
+                        question_data['option_c'], 
+                        question_data['option_d'], 
+                        question_data['correct_option'], 
+                        question_data.get('explanation', ''), 
+                        question_data.get('tags', ''), 
+                        question_data.get('subject', ''), 
+                        question_data.get('source_image_id') or None
+                    ))
+                    
                     question_id = cursor.lastrowid
                     if question_id:
-                        cursor.execute('INSERT INTO srs_schedule (user_id, question_id, next_review) VALUES (?, ?, ?)', (user_id, question_id, datetime.now()))
+                        cursor.execute(
+                            'INSERT INTO srs_schedule (user_id, question_id, next_review) VALUES (?, ?, ?)', 
+                            (user_id, question_id, datetime.now())
+                        )
+                    
                     stats['imported'] += 1
+                    logger.info(f"Successfully imported row {row_num}")
+                    
                 except Exception as e:
-                    logger.error(f"Error importing row: {row}. Error: {e}")
+                    logger.error(f"Error importing row {row_num}: {row}. Error: {e}", exc_info=True)
                     stats['errors'] += 1
+            
             conn.commit()
             stats['total'] = stats['imported'] + stats['skipped'] + stats['errors']
+            logger.info(f"Import completed: {stats}")
             return stats
+            
         except Exception as e:
             conn.rollback()
-            logger.error(f"Fatal CSV import error: {e}")
+            logger.error(f"Fatal CSV import error: {e}", exc_info=True)
             return {'imported': 0, 'skipped': 0, 'errors': 1, 'total': 0}
         finally:
             conn.close()
-
+    
     def delete_question(self, question_id: int):
         conn = sqlite3.connect(self.db_path)
         try:
@@ -816,19 +879,66 @@ All imported questions are scheduled for immediate review!
         )
         return self.WAITING_FOR_CSV
 
-    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        file_name = update.message.document.file_name
-        await update.message.reply_text(f"Received {file_name}. Processing now...")
-        try:
-            csv_file = await update.message.document.get_file()
-            file_path = await csv_file.download_to_drive()
-            df = pd.read_csv(file_path)
-            record_count = len(df)
-            await update.message.reply_text(f"✅ TEST SUCCESS! File is readable and has {record_count} records.")
-        except Exception as e:
-            logger.error(f"Error processing CSV: {e}")
-            await update.message.reply_text(f"❌ An error occurred: {e}")
+    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        user_id = update.effective_user.id
+        
+        # Check if it's a document
+        if not update.message.document:
+            await update.message.reply_text("❌ Please send a CSV file as a document.")
+            return self.WAITING_FOR_CSV
             
+        file_name = update.message.document.file_name
+        
+        # Check if it's a CSV file
+        if not file_name.lower().endswith('.csv'):
+            await update.message.reply_text("❌ Please send a CSV file (.csv extension).")
+            return self.WAITING_FOR_CSV
+            
+        processing_msg = await update.message.reply_text(f"📥 Received {file_name}. Processing now...")
+
+        try:
+            # Download the CSV file content
+            csv_file = await update.message.document.get_file()
+            file_bytes = await csv_file.download_as_bytearray()
+            
+            # Try different encodings
+            csv_data = None
+            for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
+                try:
+                    csv_data = file_bytes.decode(encoding)
+                    logger.info(f"Successfully decoded CSV with {encoding} encoding")
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if csv_data is None:
+                await processing_msg.edit_text("❌ Could not decode the CSV file. Please ensure it's saved with UTF-8 encoding.")
+                return ConversationHandler.END
+    
+            # Import questions using the database manager
+            import_stats = self.db.import_questions(user_id, csv_data)
+    
+            # Create summary message
+            summary = f"""
+✅ **Import Complete!**
+
+📊 **Results:**
+• ✅ Imported: {import_stats['imported']}
+• ⏭️ Skipped: {import_stats['skipped']}  
+• ❌ Errors: {import_stats['errors']}
+• 📝 Total processed: {import_stats['total']}
+
+All imported questions are scheduled for immediate review!
+            """
+    
+            await processing_msg.edit_text(summary, parse_mode='Markdown')
+            return ConversationHandler.END
+    
+        except Exception as e:
+            logger.error(f"Error processing CSV: {e}", exc_info=True)
+            await processing_msg.edit_text(f"❌ An error occurred while processing the CSV file: {str(e)}")
+            return ConversationHandler.END
+    
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.clear()
         await update.message.reply_text("Operation cancelled.")
