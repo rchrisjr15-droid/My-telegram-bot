@@ -437,6 +437,7 @@ class NEETPGBot:
         self.GET_TEXT_COUNT, self.GET_IMAGE_COUNT, self.SELECT_REVIEW_TAG, self.SELECT_HALT_STATUS = range(4)
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.user_data.clear()
         welcome_text = """
 🩺 **Welcome to NEET PG MCQ Bot!**
 **How it works:**
@@ -733,7 +734,9 @@ D) {question_data.get('option_d', 'N/A')}
         await query.answer()
         if 'review_session' in context.user_data:
             await self._send_next_review_question(update, context)
-
+        else:
+            if hasattr(context, 'user_data'):
+                context.user_data.clear()
     async def delete_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         question_id = int(query.data.split('_')[1])
@@ -828,77 +831,57 @@ def main():
         bot_instance = NEETPGBot()
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         
-        # Start the Flask web server in a separate thread to keep the bot alive.
+        # Start Flask thread
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
         
-                # Handler for conversations started by sending text or an image.
+        # CRITICAL: Add command handlers FIRST (they should have priority)
+        application.add_handler(CommandHandler("start", bot_instance.start_command))
+        application.add_handler(CommandHandler("stats", bot_instance.stats_command))
+        application.add_handler(CommandHandler("export", bot_instance.export_command))
+        application.add_handler(CommandHandler("import", bot_instance.import_command))
+        
+        # CRITICAL: Add review handler BEFORE unified handler
+        review_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("review", bot_instance.review_command)],
+            states={
+                bot_instance.SELECT_REVIEW_TAG: [
+                    CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
+                ],
+                bot_instance.SELECT_HALT_STATUS: [
+                    CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
+                ],
+            },
+            fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
+            per_message=False
+        )
+        
         unified_conv_handler = ConversationHandler(
             entry_points=[
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_text),
                 MessageHandler(filters.PHOTO, bot_instance.handle_photo)
             ],
             states={
-                bot_instance.GET_TEXT_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_text)],
-                bot_instance.GET_IMAGE_COUNT: [MessageHandler(filters.Regex(r'^\d+$'), bot_instance.receive_count_for_image)],
+                bot_instance.GET_TEXT_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_text)],
+                bot_instance.GET_IMAGE_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_image)]
             },
-            # THIS FALLBACKS LIST IS NOW CORRECTED to allow interruptions
-            fallbacks=[
-                CommandHandler('cancel', bot_instance.cancel),
-                CommandHandler('start', bot_instance.start_command),
-                CommandHandler('review', bot_instance.review_command),
-                CommandHandler('stats', bot_instance.stats_command),
-                CommandHandler('export', bot_instance.export_command),
-                CommandHandler('import', bot_instance.import_command),
-            ],
+            fallbacks=[CommandHandler('cancel', bot_instance.cancel)]
         )
-
-
-                # The corrected handler for the /review command conversation.
-        review_conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("review", bot_instance.review_command)],
-    states={
-        bot_instance.SELECT_REVIEW_TAG: [
-            CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
-        ],
-        bot_instance.SELECT_HALT_STATUS: [
-            CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
-        ],
-    },
-    fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
-    per_message=False
-)
-
-# IMPORTANT: Handler order matters! Add handlers in this specific order:
-
-# 1. First, add all command handlers (non-conversation)
-        application.add_handler(CommandHandler("start", bot_instance.start_command))
-        application.add_handler(CommandHandler("stats", bot_instance.stats_command))
-        application.add_handler(CommandHandler("export", bot_instance.export_command))
-        application.add_handler(CommandHandler("import", bot_instance.import_command))
-
-# 2. Then add conversation handlers
+        
+        # Add conversation handlers
         application.add_handler(review_conv_handler)
-        application.add_handler(unified_conv_handler)  # Make sure this comes after review_conv_handler
-
-# 3. Finally, add specific callback and message handlers
+        application.add_handler(unified_conv_handler)
+        
+        # Add other handlers
         application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
-
-        logger.info("🚀 NEET PG Bot started successfully!")
-
         
-        # Start polling for updates from Telegram.
+        logger.info("🚀 NEET PG Bot started successfully!")
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}", exc_info=True)
+        logger.error(f"Failed to start bot: {e}")
 
-# This ensures the 'main' function is called only when the script is executed directly.
 if __name__ == '__main__':
     main()
-
-
-
-
