@@ -490,7 +490,9 @@ class NEETPGBot:
         self.processor = ImageProcessor()
         self.current_questions = {}
         self.GET_TEXT_COUNT, self.GET_IMAGE_COUNT, self.SELECT_REVIEW_TAG, self.SELECT_HALT_STATUS = range(4)
-
+        self.IMPORT_WAIT_file = 100
+        self.WAITING_FOR_CSV = 101
+        
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         welcome_text = """
@@ -684,7 +686,7 @@ D) {question_data.get('option_d', 'N/A')}
             # Download the CSV file content
             csv_file = await update.message.document.get_file()
             file_bytes = await csv_file.download_as_bytearray()
-            csv_data = file_bytes.decode('utf-8')
+            csv_data = file_bytes.decode('utf-8-sig')
     
             # Import questions using the database manager
             import_stats = self.db.import_questions(user_id, csv_data)
@@ -939,6 +941,14 @@ All imported questions are scheduled for immediate review!
             await processing_msg.edit_text(f"❌ An error occurred while processing the CSV file: {str(e)}")
             return ConversationHandler.END
     
+    async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Start CSV import and wait for the next uploaded file."""
+        await update.message.reply_text(
+        "📥 Please upload the CSV file now (the same format as /export). Send /cancel to abort."
+        )
+        return self.IMPORT_WAIT_FILE
+
+
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.clear()
         await update.message.reply_text("Operation cancelled.")
@@ -976,58 +986,81 @@ def main():
     try:
         bot_instance = NEETPGBot()
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        
+
         # Start Flask thread
         flask_thread = threading.Thread(target=run_flask, daemon=True)
         flask_thread.start()
-        
-        # CRITICAL: Add command handlers FIRST (they should have priority)
+
+        # Command handlers
         application.add_handler(CommandHandler("start", bot_instance.start_command))
-        application.add_handler(CommandHandler("stats", bot_instance.stats_command))    
+        application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
         application.add_handler(CommandHandler("import", bot_instance.import_command))
-        
-        # CRITICAL: Add review handler BEFORE unified handler
+
+        # Import conversation: waits for CSV after /import
+        import_conv_handler = ConversationHandler(
+            entry_points=[CommandHandler("import", bot_instance.import_command)],
+            states={
+                bot_instance.WAITING_FOR_CSV: [
+                    MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file)
+                ]
+            },
+            fallbacks=[CommandHandler("cancel", bot_instance.cancel)],
+            per_message=False,
+            allow_reentry=True,
+        )
+        application.add_handler(import_conv_handler)
+
+        # Review conversation
         review_conv_handler = ConversationHandler(
             entry_points=[CommandHandler("review", bot_instance.review_command)],
             states={
                 bot_instance.SELECT_REVIEW_TAG: [
-                    CallbackQueryHandler(bot_instance.handle_review_menu_callback, pattern=r'^(review_all|select_tag|noop)')
+                    CallbackQueryHandler(
+                        bot_instance.handle_review_menu_callback,
+                        pattern=r'^(review_all|select_tag|noop)'
+                    )
                 ],
                 bot_instance.SELECT_HALT_STATUS: [
-                    CallbackQueryHandler(bot_instance.select_halt_status_callback, pattern=r'^review_status:')
+                    CallbackQueryHandler(
+                        bot_instance.select_halt_status_callback,
+                        pattern=r'^review_status:'
+                    )
                 ],
             },
             fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
-            per_message=False
+            per_message=False,
         )
-        
+        application.add_handler(review_conv_handler)
+
+        # Unified text/photo conversation
         unified_conv_handler = ConversationHandler(
             entry_points=[
                 MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.handle_text),
-                MessageHandler(filters.PHOTO, bot_instance.handle_photo)
+                MessageHandler(filters.PHOTO, bot_instance.handle_photo),
             ],
             states={
-                bot_instance.GET_TEXT_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_text)],
-                bot_instance.GET_IMAGE_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_image)]
+                bot_instance.GET_TEXT_COUNT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_text)
+                ],
+                bot_instance.GET_IMAGE_COUNT: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, bot_instance.receive_count_for_image)
+                ],
             },
-            fallbacks=[CommandHandler('cancel', bot_instance.cancel)]
+            fallbacks=[CommandHandler('cancel', bot_instance.cancel)],
         )
-        
-        # Add conversation handlers
-        application.add_handler(review_conv_handler)
         application.add_handler(unified_conv_handler)
-        
-        # Add other handlers
-        application.add_handler(MessageHandler(filters.Document.MimeType("text/csv"), bot_instance.receive_csv_file))
+
+        # Other callback query handlers
         application.add_handler(CallbackQueryHandler(bot_instance.delete_callback, pattern=r'^delete_'))
         application.add_handler(CallbackQueryHandler(bot_instance.handle_answer, pattern=r'^answer_'))
-        
+
         logger.info("🚀 NEET PG Bot started successfully!")
         application.run_polling()
-        
+
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
+
 
 if __name__ == '__main__':
     main()
