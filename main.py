@@ -395,7 +395,7 @@ First, classify the image into one of three types:
 
 ---
 **IF "LABELED_DIAGRAM", FOLLOW THESE RULES: (This is corrected)**
-1.  **Describe the Image:** Your ONLY job is to describe the image and its labels in text form. For example: "A diagram of the heart showing the aorta, left ventricle, and right atrium."
+1.  **Hide a labelling:** ."Your job is to hide a label and prepare questions based on the labelled part or the condition assoiciated with it."
 2.  **Return this exact JSON format:** This format signals that questions should be generated from the content.
     {{
       "type": "text",
