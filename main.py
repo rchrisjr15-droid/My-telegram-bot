@@ -60,6 +60,10 @@ logger.addHandler(file_handler)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'YOUR_GEMINI_API_KEY')
 
+# Instance management
+INSTANCE_ID = os.getenv('REPL_ID', 'local') + "_" + str(int(time.time()))
+LOCK_FILE = 'bot_instance.lock'
+
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -79,12 +83,12 @@ class DatabaseManager:
     def __init__(self, db_path='neet_pg_bot.db'):
         self.db_path = db_path
         self.init_database()
-    
+
     def init_database(self):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
-        
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, question_text TEXT NOT NULL,
@@ -177,7 +181,7 @@ class DatabaseManager:
             return question_id
         finally:
             conn.close()
-    
+
     def update_srs(self, user_id: int, question_id: int, is_correct: bool):
         conn = sqlite3.connect(self.db_path)
         try:
@@ -204,7 +208,7 @@ class DatabaseManager:
             conn.commit()
         finally:
             conn.close()
-    
+
     def update_user_stats(self, user_id: int, is_correct: bool):
         conn = sqlite3.connect(self.db_path)
         try:
@@ -230,7 +234,7 @@ class DatabaseManager:
             conn.commit()
         finally:
             conn.close()
-    
+
     def get_user_stats(self, user_id: int) -> Dict[str, int]:
         conn = sqlite3.connect(self.db_path)
         try:
@@ -253,7 +257,7 @@ class DatabaseManager:
             return questions
         finally:
             conn.close()
-    
+
     def export_questions(self, user_id: int) -> str:
         conn = sqlite3.connect(self.db_path)
         try:
@@ -273,17 +277,17 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
-            
+
             # Clean the CSV data - remove BOM if present
             if csv_data.startswith('\ufeff'):
                 csv_data = csv_data[1:]
-            
+
             csv_reader = csv.DictReader(StringIO(csv_data))
-            stats = {'imported': 0, 'skipped': 0, 'errors': 0}
-            
+            stats = {'imported': 0, 'skipped': 0, 'errors': 0, 'duplicates': 0}
+
             # Log the fieldnames for debugging
             logger.info(f"CSV fieldnames: {csv_reader.fieldnames}")
-            
+
             field_mapping = {
                 'Question': 'question', 
                 'Option A': 'option_a', 
@@ -296,35 +300,48 @@ class DatabaseManager:
                 'Subject': 'subject', 
                 'Source Image ID': 'source_image_id'
             }
-            
+
+            # Pre-fetch existing questions to check for duplicates
+            cursor.execute("SELECT question_text FROM questions WHERE user_id = ?", (user_id,))
+            existing_questions = {row[0] for row in cursor.fetchall()}
+
+
             for row_num, row in enumerate(csv_reader, start=1):
                 try:
                     logger.info(f"Processing row {row_num}: {dict(row)}")
-                    
+
                     # Check essential fields
                     essential = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option']
                     missing_fields = [field for field in essential if not row.get(field, '').strip()]
-                    
+
+                    question_text = row.get('Question', '').strip()
+
                     if missing_fields:
                         logger.warning(f"Row {row_num} skipped - missing fields: {missing_fields}")
                         stats['skipped'] += 1
                         continue
                     
+                    # Check for duplicates
+                    if question_text in existing_questions:
+                        logger.warning(f"Row {row_num} skipped - duplicate question found: '{question_text}'")
+                        stats['duplicates'] += 1
+                        continue
+
                     # Map the fields
                     question_data = {}
                     for csv_field, db_field in field_mapping.items():
                         value = row.get(csv_field, '').strip()
                         question_data[db_field] = value
-                    
+
                     # Validate correct option
                     correct_option = question_data['correct_option'].upper()
                     if correct_option not in ['A', 'B', 'C', 'D']:
                         logger.warning(f"Row {row_num} skipped - invalid correct option: {correct_option}")
                         stats['skipped'] += 1
                         continue
-                    
+
                     question_data['correct_option'] = correct_option
-                    
+
                     # Insert into database
                     cursor.execute('''
                         INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
@@ -343,33 +360,35 @@ class DatabaseManager:
                         question_data.get('subject', ''), 
                         question_data.get('source_image_id') or None
                     ))
-                    
+
                     question_id = cursor.lastrowid
                     if question_id:
+                        # Only schedule new questions for immediate review
                         cursor.execute(
                             'INSERT INTO srs_schedule (user_id, question_id, next_review) VALUES (?, ?, ?)', 
                             (user_id, question_id, datetime.now())
                         )
-                    
+
                     stats['imported'] += 1
+                    existing_questions.add(question_text) # Add to set to prevent future duplicates in the same file
                     logger.info(f"Successfully imported row {row_num}")
-                    
+
                 except Exception as e:
                     logger.error(f"Error importing row {row_num}: {row}. Error: {e}", exc_info=True)
                     stats['errors'] += 1
-            
+
             conn.commit()
-            stats['total'] = stats['imported'] + stats['skipped'] + stats['errors']
+            stats['total'] = stats['imported'] + stats['skipped'] + stats['errors'] + stats['duplicates']
             logger.info(f"Import completed: {stats}")
             return stats
-            
+
         except Exception as e:
             conn.rollback()
             logger.error(f"Fatal CSV import error: {e}", exc_info=True)
-            return {'imported': 0, 'skipped': 0, 'errors': 1, 'total': 0}
+            return {'imported': 0, 'skipped': 0, 'errors': 1, 'duplicates': 0, 'total': 0}
         finally:
             conn.close()
-    
+
     def delete_question(self, question_id: int):
         conn = sqlite3.connect(self.db_path)
         try:
@@ -379,6 +398,57 @@ class DatabaseManager:
             cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
             conn.commit()
             logger.info(f"Deleted question with ID: {question_id}")
+        finally:
+            conn.close()
+
+    def remove_duplicate_questions(self, user_id: int) -> Dict[str, int]:
+        """Remove duplicate questions keeping the oldest one"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            
+            # Find duplicates - group by question text and keep the oldest (min ID)
+            cursor.execute('''
+                SELECT question_text, MIN(id) as keep_id, COUNT(*) as total_count
+                FROM questions 
+                WHERE user_id = ?
+                GROUP BY question_text 
+                HAVING COUNT(*) > 1
+            ''', (user_id,))
+            
+            duplicates = cursor.fetchall()
+            total_removed = 0
+            
+            for question_text, keep_id, total_count in duplicates:
+                # Get all question IDs for this text except the one we're keeping
+                cursor.execute('''
+                    SELECT id FROM questions 
+                    WHERE user_id = ? AND question_text = ? AND id != ?
+                ''', (user_id, question_text, keep_id))
+                
+                duplicate_ids = [row[0] for row in cursor.fetchall()]
+                
+                # Delete each duplicate
+                for question_id in duplicate_ids:
+                    cursor.execute("DELETE FROM answer_history WHERE question_id = ?", (question_id,))
+                    cursor.execute("DELETE FROM srs_schedule WHERE question_id = ?", (question_id,))
+                    cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+                    total_removed += 1
+                
+                logger.info(f"Removed {len(duplicate_ids)} duplicates of: '{question_text[:50]}...'")
+            
+            conn.commit()
+            
+            return {
+                'duplicate_groups': len(duplicates),
+                'questions_removed': total_removed,
+                'questions_kept': len(duplicates)
+            }
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error removing duplicates: {e}", exc_info=True)
+            return {'duplicate_groups': 0, 'questions_removed': 0, 'questions_kept': 0}
         finally:
             conn.close()
 
@@ -402,10 +472,10 @@ class ImageProcessor:
 
         correct_option_letter = data.get("correct_option", "A").upper()
         correct_option_index = ord(correct_option_letter) - ord('A')
-        
+
         if correct_option_index < 0 or correct_option_index >= len(options):
             return data
-            
+
         correct_answer_text = options[correct_option_index]
         random.shuffle(options)
         new_correct_letter = ""
@@ -416,7 +486,7 @@ class ImageProcessor:
             data[new_key] = option_text
             if option_text == correct_answer_text:
                 new_correct_letter = chr(ord('A') + i)
-        
+
         data["correct_option"] = new_correct_letter
         return data
 
@@ -461,21 +531,21 @@ First, classify the image into one of three types:
       "data": {{ "content": "A text description of the labeled diagram, including all the labels." }}
     }}
 """
-            
+
             response = model.generate_content([prompt, image])
-            
+
             response_text = response.text
             json_start_index = response_text.find('{')
             json_end_index = response_text.rfind('}')
 
             if json_start_index != -1 and json_end_index > json_start_index:
                 json_str = response_text[json_start_index : json_end_index + 1]
-                
+
                 parsed_json = json.loads(json_str)
 
                 if parsed_json.get("type") == "mcq" and parsed_json.get("data"):
                     parsed_json["data"] = self._shuffle_options(parsed_json["data"])
-                
+
                 return parsed_json
             else:
                 return None
@@ -491,7 +561,7 @@ class NEETPGBot:
         self.current_questions = {}
         self.GET_TEXT_COUNT, self.GET_IMAGE_COUNT, self.SELECT_REVIEW_TAG, self.SELECT_HALT_STATUS = range(4)
         self.WAITING_FOR_CSV = 101
-        
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         welcome_text = """
@@ -504,7 +574,7 @@ class NEETPGBot:
 2. 📝 **Send a topic** (e.g., "Anatomy of the heart"):
    - I'll ask how many questions you want and then generate them.
 **Commands:**
-📊 /stats  🔄 /review  📤 /export  📥 /import  ❌ /cancel
+📊 /stats  🔄 /review  📤 /export  📥 /import  🧹 /cleanup  ❌ /cancel
         """
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
 
@@ -516,13 +586,13 @@ class NEETPGBot:
         user_id = update.effective_user.id
         photo = update.message.photo[-1]
         caption = update.message.caption or ""
-        
+
         # Extract hashtags for auto-tagging
         hashtags = [caption[entity.offset:entity.offset + entity.length] 
                     for entity in (update.message.caption_entities or []) 
                     if entity.type == MessageEntity.HASHTAG]
         tags = " ".join(hashtags)
-        
+
         # --- START OF FIX ---
         # Create a clean version of the caption without hashtags to send to the AI
         clean_caption = caption
@@ -530,12 +600,12 @@ class NEETPGBot:
             clean_caption = clean_caption.replace(tag, "")
         clean_caption = clean_caption.strip()
         # --- END OF FIX ---
-        
+
         processing_msg = await update.message.reply_text("📸 Analyzing your image...")
         try:
             file = await context.bot.get_file(photo.file_id)
             file_bytes = await file.download_as_bytearray()
-            
+
             # Pass the CLEAN caption as the additional_prompt
             analysis_result = await self.processor.analyze_image(bytes(file_bytes), additional_prompt=clean_caption)
 
@@ -606,7 +676,7 @@ D) {question_data.get('option_d', 'N/A')}
             await update.effective_chat.send_message("🎉 **Review session complete!** You've answered all due questions. Great job!")
             if 'review_session' in context.user_data:
                 del context.user_data['review_session']
-    
+
     async def _start_review_session(self, update: Update, context: ContextTypes.DEFAULT_TYPE, questions: list, description: str):
         query = update.callback_query
         if not questions:
@@ -651,8 +721,8 @@ D) {question_data.get('option_d', 'N/A')}
             tag_name = "Untagged" if tag == '__UNTAGGED__' else tag
             context.user_data['selected_tag'] = tag
             keyboard = [
-                [InlineKeyboardButton("▶️ Non-Halted Cards", callback_data=f"review_status:non_halted")],
-                [InlineKeyboardButton("⏸️ Halted Cards (Reviewed 3+ times)", callback_data=f"review_status:halted")]
+                [InlineKeyboardButton("▶️ Non-Halted Cards", callback_data="review_status:non_halted")],
+                [InlineKeyboardButton("⏸️ Halted Cards (Reviewed 3+ times)", callback_data="review_status:halted")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(f"Reviewing **{tag_name}**. Which cards do you want to see?", reply_markup=reply_markup, parse_mode='Markdown')
@@ -673,8 +743,8 @@ D) {question_data.get('option_d', 'N/A')}
         tag_name = "Untagged" if tag == '__UNTAGGED__' else tag
         description = f"{halt_status.replace('_', ' ')} cards in '{tag_name}'"
         return await self._start_review_session(update, context, questions, description)
-    
-    
+
+
 
     async def receive_count_for_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_text = context.user_data.pop('image_text', None)
@@ -810,7 +880,7 @@ D) {question_data.get('option_d', 'N/A')}
         else:
             await query.answer("Question deleted.")
 
-    
+
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         try:
@@ -827,7 +897,7 @@ D) {question_data.get('option_d', 'N/A')}
         except Exception as e:
             logger.error(f"Export error: {e}", exc_info=True)
             await update.message.reply_text("❌ Export failed.")
-    
+
     async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle the /import command to start CSV import process"""
         await update.message.reply_text(
@@ -868,15 +938,15 @@ D) {question_data.get('option_d', 'N/A')}
             import_stats = self.db.import_questions(user_id, csv_data)
 
             # Create summary message
-            summary = f"""
-✅ **Import Complete!**
+            summary = f"""✅ **Import Complete!**
+
 📊 **Results:**
 • ✅ Imported: {import_stats['imported']}
-• ⏭️ Skipped: {import_stats['skipped']}
+• 🔄 Duplicates skipped: {import_stats.get('duplicates', 0)}
 • ❌ Errors: {import_stats['errors']}
 • 📝 Total processed: {import_stats['total']}
 
-All imported questions are scheduled for immediate review!
+Only newly imported questions are scheduled for immediate review!
             """
 
             await processing_msg.edit_text(summary, parse_mode='Markdown')
@@ -884,9 +954,8 @@ All imported questions are scheduled for immediate review!
         except Exception as e:
             logger.error(f"Error processing CSV: {e}", exc_info=True)
             await processing_msg.edit_text(f"❌ An error occurred while processing the file: {str(e)}")
-        
+
         return ConversationHandler.END
-    
 
 
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -908,6 +977,32 @@ All imported questions are scheduled for immediate review!
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
 
+    async def cleanup_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Remove duplicate questions from the database"""
+        user_id = update.effective_user.id
+        processing_msg = await update.message.reply_text("🧹 Scanning for duplicate questions...")
+        
+        try:
+            cleanup_stats = self.db.remove_duplicate_questions(user_id)
+            
+            if cleanup_stats['questions_removed'] == 0:
+                await processing_msg.edit_text("✨ No duplicate questions found! Your database is clean.")
+            else:
+                summary = f"""✅ **Cleanup Complete!**
+
+📊 **Results:**
+• 🧹 Duplicate groups found: {cleanup_stats['duplicate_groups']}
+• ❌ Duplicate questions removed: {cleanup_stats['questions_removed']}
+• ✅ Original questions kept: {cleanup_stats['questions_kept']}
+
+The oldest version of each question was preserved with its original SRS schedule.
+                """
+                await processing_msg.edit_text(summary, parse_mode='Markdown')
+                
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}", exc_info=True)
+            await processing_msg.edit_text("❌ An error occurred during cleanup.")
+
 
 
 app = Flask(__name__)
@@ -921,8 +1016,44 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
+def acquire_bot_lock():
+    """Acquire exclusive lock to prevent multiple bot instances"""
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE, 'r') as f:
+                existing_id = f.read().strip()
+            # Check if lock is older than 5 minutes (stale)
+            lock_time = os.path.getmtime(LOCK_FILE)
+            if time.time() - lock_time > 300:  # 5 minutes
+                logger.info("Removing stale lock file")
+                os.remove(LOCK_FILE)
+            else:
+                logger.error(f"Another bot instance is already running: {existing_id}")
+                return False
+
+        with open(LOCK_FILE, 'w') as f:
+            f.write(INSTANCE_ID)
+        logger.info(f"Acquired bot lock with instance ID: {INSTANCE_ID}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to acquire lock: {e}")
+        return False
+
+def release_bot_lock():
+    """Release the bot instance lock"""
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+        logger.info("Released bot lock")
+    except Exception as e:
+        logger.error(f"Failed to release lock: {e}")
+
 def main():
     """Starts and runs the bot."""
+    if not acquire_bot_lock():
+        logger.error("Cannot start bot: another instance is already running")
+        return
+
     try:
         bot_instance = NEETPGBot()
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -935,6 +1066,7 @@ def main():
         application.add_handler(CommandHandler("start", bot_instance.start_command))
         application.add_handler(CommandHandler("stats", bot_instance.stats_command))
         application.add_handler(CommandHandler("export", bot_instance.export_command))
+        application.add_handler(CommandHandler("cleanup", bot_instance.cleanup_command))
 
         # Import conversation: waits for CSV after /import
         import_conv_handler = ConversationHandler(
@@ -999,6 +1131,8 @@ def main():
 
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
+    finally:
+        release_bot_lock()
 
 
 if __name__ == '__main__':
