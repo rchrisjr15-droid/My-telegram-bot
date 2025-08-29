@@ -94,14 +94,10 @@ class DatabaseManager:
                 source_image_id TEXT
             )
         ''')
-
-        # This code adds the new column for storing images if it doesn't exist.
-        # It will only run once and is safe to keep.
         try:
             cursor.execute("ALTER TABLE questions ADD COLUMN source_image_id TEXT")
-            logger.info("Database updated: Added 'source_image_id' column to questions table.")
         except sqlite3.OperationalError:
-            pass # Column already exists, do nothing.
+            pass
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS srs_schedule (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, question_id INTEGER, next_review TIMESTAMP, interval_days INTEGER DEFAULT 1, ease_factor REAL DEFAULT 2.5, repetitions INTEGER DEFAULT 0, last_answered TIMESTAMP, FOREIGN KEY (question_id) REFERENCES questions (id))
@@ -116,321 +112,212 @@ class DatabaseManager:
         conn.close()
 
     def get_unique_tags(self, user_id: int) -> List[str]:
-        """Gets a list of all unique tags for a user."""
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT DISTINCT tags FROM questions WHERE user_id = ? AND tags IS NOT NULL AND tags != ''",
-            (user_id,)
-            )
+            cursor.execute("SELECT DISTINCT tags FROM questions WHERE user_id = ? AND tags IS NOT NULL AND tags != ''", (user_id,))
             tags = [row[0] for row in cursor.fetchall()]
             return tags
         finally:
             conn.close()
 
-
     def has_untagged_questions(self, user_id: int) -> bool:
-        """Checks if a user has any questions without a tag."""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM questions WHERE user_id = ? AND (tags IS NULL OR tags = '') LIMIT 1",
-            (user_id,)
-        )
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM questions WHERE user_id = ? AND (tags IS NULL OR tags = '') LIMIT 1", (user_id,))
+            result = cursor.fetchone()
+            return result is not None
+        finally:
+            conn.close()
 
     def get_due_questions(self, user_id: int, tag: Optional[str] = None, halt_status: str = 'non_halted') -> List[Dict]:
-        """Gets due questions, with filters for tags and halt status (reviewed 3+ times)."""
         conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        query = '''
-            SELECT q.* FROM questions q
-            JOIN srs_schedule s ON q.id = s.question_id
-            WHERE s.user_id = ? AND s.next_review <= ?
-        '''
-        params = [user_id, datetime.now()]
-
-        if tag:
-            if tag == '__UNTAGGED__':
-                query += " AND (q.tags IS NULL OR q.tags = '')"
-            else:
-                query += " AND q.tags = ?"
-                params.append(tag)
-        
-        # Add logic for halt status based on repetitions
-        if halt_status == 'halted':
-            query += " AND s.repetitions >= 3"
-        elif halt_status == 'non_halted':
-            query += " AND s.repetitions < 3"
-            
-        query += " ORDER BY s.next_review ASC"
-
-        cursor.execute(query, tuple(params))
-        questions = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return questions
+        try:
+            cursor = conn.cursor()
+            query = 'SELECT q.* FROM questions q JOIN srs_schedule s ON q.id = s.question_id WHERE s.user_id = ? AND s.next_review <= ?'
+            params = [user_id, datetime.now()]
+            if tag:
+                if tag == '__UNTAGGED__':
+                    query += " AND (q.tags IS NULL OR q.tags = '')"
+                else:
+                    query += " AND q.tags = ?"
+                    params.append(tag)
+            if halt_status == 'halted':
+                query += " AND s.repetitions >= 3"
+            elif halt_status == 'non_halted':
+                query += " AND s.repetitions < 3"
+            query += " ORDER BY s.next_review ASC"
+            cursor.execute(query, tuple(params))
+            questions = [dict(row) for row in cursor.fetchall()]
+            return questions
+        finally:
+            conn.close()
 
     def add_question(self, user_id: int, question_data: Dict[str, Any]) -> int:
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
-                                 correct_option, explanation, tags, subject, source_image_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            question_data['question'],
-            question_data['option_a'],
-            question_data['option_b'],
-            question_data['option_c'],
-            question_data['option_d'],
-            question_data['correct_option'],
-            question_data.get('explanation', ''),
-            question_data.get('tags', ''),
-            question_data.get('subject', ''),
-            question_data.get('source_image_id', None) # Handles the new image ID
-        ))
-        
-        question_id = cursor.lastrowid
-        
-        if question_id:
+        try:
+            cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO srs_schedule (user_id, question_id, next_review)
-                VALUES (?, ?, ?)
-            ''', (user_id, question_id, datetime.now()))
-        
-        conn.commit()
-        conn.close()
-        return question_id
+                INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
+                                     correct_option, explanation, tags, subject, source_image_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id, question_data['question'], question_data['option_a'], question_data['option_b'],
+                question_data['option_c'], question_data['option_d'], question_data['correct_option'],
+                question_data.get('explanation', ''), question_data.get('tags', ''),
+                question_data.get('subject', ''), question_data.get('source_image_id', None)
+            ))
+            question_id = cursor.lastrowid
+            if question_id:
+                cursor.execute('INSERT INTO srs_schedule (user_id, question_id, next_review) VALUES (?, ?, ?)',
+                               (user_id, question_id, datetime.now()))
+            conn.commit()
+            return question_id
+        finally:
+            conn.close()
     
     def update_srs(self, user_id: int, question_id: int, is_correct: bool):
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT interval_days, ease_factor, repetitions FROM srs_schedule
-            WHERE user_id = ? AND question_id = ?
-        ''', (user_id, question_id))
-        
-        result = cursor.fetchone()
-        if not result: return
-
-        interval_days, ease_factor, repetitions = result
-        
-        if is_correct:
-            if repetitions == 0: new_interval = 1
-            elif repetitions == 1: new_interval = 6
-            else: new_interval = int(interval_days * ease_factor)
-            new_repetitions = repetitions + 1
-            new_ease_factor = ease_factor + (0.1 - (5 - 3) * (0.08 + (5 - 3) * 0.02))
-        else:
-            new_interval = 1
-            new_repetitions = 0 # Reset streak on wrong answer
-            new_ease_factor = max(1.3, ease_factor - 0.2) # Less harsh penalty
-        
-        next_review = datetime.now() + timedelta(days=new_interval)
-        
-        cursor.execute('''
-            UPDATE srs_schedule SET
-                interval_days = ?, ease_factor = ?, repetitions = ?,
-                next_review = ?, last_answered = ?
-            WHERE user_id = ? AND question_id = ?
-        ''', (new_interval, new_ease_factor, new_repetitions, next_review, 
-              datetime.now(), user_id, question_id))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('SELECT interval_days, ease_factor, repetitions FROM srs_schedule WHERE user_id = ? AND question_id = ?', (user_id, question_id))
+            result = cursor.fetchone()
+            if not result: return
+            interval_days, ease_factor, repetitions = result
+            if is_correct:
+                if repetitions == 0: new_interval = 1
+                elif repetitions == 1: new_interval = 6
+                else: new_interval = int(interval_days * ease_factor)
+                new_repetitions = repetitions + 1
+                new_ease_factor = ease_factor + (0.1 - (5 - 3) * (0.08 + (5 - 3) * 0.02))
+            else:
+                new_interval = 1
+                new_repetitions = 0
+                new_ease_factor = max(1.3, ease_factor - 0.2)
+            next_review = datetime.now() + timedelta(days=new_interval)
+            cursor.execute('''
+                UPDATE srs_schedule SET interval_days = ?, ease_factor = ?, repetitions = ?, next_review = ?, last_answered = ?
+                WHERE user_id = ? AND question_id = ?
+            ''', (new_interval, new_ease_factor, new_repetitions, next_review, datetime.now(), user_id, question_id))
+            conn.commit()
+        finally:
+            conn.close()
     
     def update_user_stats(self, user_id: int, is_correct: bool):
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
-        stats = cursor.fetchone()
-        
-        if not stats:
-            cursor.execute('''
-                INSERT INTO user_stats (user_id, total_questions, correct_answers, wrong_answers, current_streak, best_streak)
-                VALUES (?, 1, ?, ?, ?, ?)
-            ''', (user_id, 1 if is_correct else 0, 0 if is_correct else 1, 1 if is_correct else 0, 1 if is_correct else 0))
-        else:
-            total = stats['total_questions'] + 1
-            correct = stats['correct_answers'] + (1 if is_correct else 0)
-            wrong = stats['wrong_answers'] + (0 if is_correct else 1)
-            current_streak = stats['current_streak'] + 1 if is_correct else 0
-            best_streak = max(stats['best_streak'], current_streak)
-            
-            cursor.execute('''
-                UPDATE user_stats SET
-                    total_questions = ?, correct_answers = ?, wrong_answers = ?,
-                    current_streak = ?, best_streak = ?, last_activity = ?
-                WHERE user_id = ?
-            ''', (total, correct, wrong, current_streak, best_streak, datetime.now(), user_id))
-        
-        conn.commit()
-        conn.close()
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
+            stats = cursor.fetchone()
+            if not stats:
+                cursor.execute('''
+                    INSERT INTO user_stats (user_id, total_questions, correct_answers, wrong_answers, current_streak, best_streak)
+                    VALUES (?, 1, ?, ?, ?, ?)
+                ''', (user_id, 1 if is_correct else 0, 0 if is_correct else 1, 1 if is_correct else 0, 1 if is_correct else 0))
+            else:
+                total = stats['total_questions'] + 1
+                correct = stats['correct_answers'] + (1 if is_correct else 0)
+                wrong = stats['wrong_answers'] + (0 if is_correct else 1)
+                current_streak = stats['current_streak'] + 1 if is_correct else 0
+                best_streak = max(stats['best_streak'], current_streak)
+                cursor.execute('''
+                    UPDATE user_stats SET total_questions = ?, correct_answers = ?, wrong_answers = ?, current_streak = ?, best_streak = ?, last_activity = ?
+                    WHERE user_id = ?
+                ''', (total, correct, wrong, current_streak, best_streak, datetime.now(), user_id))
+            conn.commit()
+        finally:
+            conn.close()
     
+    def get_user_stats(self, user_id: int) -> Dict[str, int]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row: return dict(row)
+            return {'total_questions': 0, 'correct_answers': 0, 'wrong_answers': 0, 'current_streak': 0, 'best_streak': 0}
+        finally:
+            conn.close()
+
     def get_questions_by_tag(self, user_id: int, tag: str) -> List[Dict]:
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, tags, subject 
-            FROM questions WHERE user_id = ? AND tags LIKE ?
-        ''', (user_id, f'%{tag}%'))
-        
-        questions = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return questions
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, tags, subject FROM questions WHERE user_id = ? AND tags LIKE ?', (user_id, f'%{tag}%'))
+            questions = [dict(row) for row in cursor.fetchall()]
+            return questions
+        finally:
+            conn.close()
     
-    
-def export_questions(self, user_id: int) -> str:
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id FROM questions WHERE user_id = ?', (user_id,))
-    questions = cursor.fetchall()
-    
-    if not questions:
-        return ""
+    def export_questions(self, user_id: int) -> str:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('SELECT question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id FROM questions WHERE user_id = ?', (user_id,))
+            questions = cursor.fetchall()
+            if not questions: return ""
+            output = StringIO()
+            writer = csv.writer(output)
+            writer.writerow(['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option', 'Explanation', 'Tags', 'Subject', 'Source Image ID'])
+            writer.writerows(questions)
+            return output.getvalue()
+        finally:
+            conn.close()
 
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Question', 'Option A', 'Option B', 'Option C', 'Option D', 
-                     'Correct Option', 'Explanation', 'Tags', 'Subject', 'Source Image ID'])
-    
-    writer.writerows(questions)
-    conn.close()
-    return output.getvalue()
-
-def import_questions(self, user_id: int, csv_str) -> Dict[str, int]:
-    """
-    Imports questions from CSV data.
-    Returns a dictionary with import statistics.
-    """
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
-
-    try:
-        csv_reader = csv.DictReader(StringIO(csv_data))
-        
-        imported_count = 0
-        skipped_count = 0
-        error_count = 0
-        
-        # Define field mapping from CSV headers to database fields
-        field_mapping = {
-            'Question': 'question',
-            'Option A': 'option_a',
-            'Option B': 'option_b',
-            'Option C': 'option_c',
-            'Option D': 'option_d',
-            'Correct Option': 'correct_option',
-            'Explanation': 'explanation',
-            'Tags': 'tags',
-            'Subject': 'subject',
-            'Source Image ID': 'source_image_id'
-        }
-        
-        for row in csv_reader:
-            try:
-                # Check for essential required fields only
-                essential_fields = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option']
-                if not all(field in row and row[field].strip() for field in essential_fields):
-                    skipped_count += 1
-                    continue
-                
-                # Prepare question data with proper mapping
-                question_data = {}
-                for csv_field, db_field in field_mapping.items():
-                    if csv_field in row:
-                        value = row[csv_field].strip()
-                        if db_field == 'source_image_id':
-                            question_data[db_field] = value if value else None
-                        else:
-                            question_data[db_field] = value
-                    else:
-                        # Set defaults for missing optional fields
-                        if db_field in ['explanation', 'tags', 'subject']:
-                            question_data[db_field] = ''
-                        elif db_field == 'source_image_id':
-                            question_data[db_field] = None
-                
-                # Validate correct option
-                if question_data['correct_option'].upper() not in ['A', 'B', 'C', 'D']:
-                    skipped_count += 1
-                    continue
-                
-                # Insert question
-                cursor.execute('''
-                    INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, 
-                                         correct_option, explanation, tags, subject, source_image_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    user_id,
-                    question_data['question'],
-                    question_data['option_a'],
-                    question_data['option_b'],
-                    question_data['option_c'],
-                    question_data['option_d'],
-                    question_data['correct_option'].upper(),
-                    question_data['explanation'],
-                    question_data['tags'],
-                    question_data['subject'],
-                    question_data['source_image_id']
-                ))
-                
-                question_id = cursor.lastrowid
-                
-                # Add to SRS schedule
-                if question_id:
+    def import_questions(self, user_id: int, csv_data: str) -> Dict[str, int]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            csv_reader = csv.DictReader(StringIO(csv_data))
+            stats = {'imported': 0, 'skipped': 0, 'errors': 0}
+            field_mapping = {'Question': 'question', 'Option A': 'option_a', 'Option B': 'option_b', 'Option C': 'option_c', 'Option D': 'option_d', 'Correct Option': 'correct_option', 'Explanation': 'explanation', 'Tags': 'tags', 'Subject': 'subject', 'Source Image ID': 'source_image_id'}
+            for row in csv_reader:
+                try:
+                    essential = ['Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option']
+                    if not all(field in row and row[field].strip() for field in essential):
+                        stats['skipped'] += 1
+                        continue
+                    question_data = {db_field: row.get(csv_field, '').strip() for csv_field, db_field in field_mapping.items()}
+                    if question_data['correct_option'].upper() not in ['A', 'B', 'C', 'D']:
+                        stats['skipped'] += 1
+                        continue
                     cursor.execute('''
-                        INSERT INTO srs_schedule (user_id, question_id, next_review)
-                        VALUES (?, ?, ?)
-                    ''', (user_id, question_id, datetime.now()))
-                
-                imported_count += 1
-                
-            except Exception as e:
-                logger.error(f"Error importing question: {e}")
-                error_count += 1
-                continue
-        
-        conn.commit()
-        
-        return {
-            'imported': imported_count,
-            'skipped': skipped_count,
-            'errors': error_count,
-            'total': imported_count + skipped_count + error_count
-        }
-        
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"CSV import error: {e}")
-        return {'imported': 0, 'skipped': 0, 'errors': 1, 'total': 0}
-    
-    finally:
-        conn.close()
+                        INSERT INTO questions (user_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, tags, subject, source_image_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (user_id, question_data['question'], question_data['option_a'], question_data['option_b'], question_data['option_c'], question_data['option_d'], question_data['correct_option'].upper(), question_data.get('explanation'), question_data.get('tags'), question_data.get('subject'), question_data.get('source_image_id') or None))
+                    question_id = cursor.lastrowid
+                    if question_id:
+                        cursor.execute('INSERT INTO srs_schedule (user_id, question_id, next_review) VALUES (?, ?, ?)', (user_id, question_id, datetime.now()))
+                    stats['imported'] += 1
+                except Exception as e:
+                    logger.error(f"Error importing row: {row}. Error: {e}")
+                    stats['errors'] += 1
+            conn.commit()
+            stats['total'] = stats['imported'] + stats['skipped'] + stats['errors']
+            return stats
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Fatal CSV import error: {e}")
+            return {'imported': 0, 'skipped': 0, 'errors': 1, 'total': 0}
+        finally:
+            conn.close()
 
-def delete_question(self, question_id: int):
-    """Permanently deletes a question and its related data."""
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM answer_history WHERE question_id = ?", (question_id,))
-    cursor.execute("DELETE FROM srs_schedule WHERE question_id = ?", (question_id,))
-    cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
-    conn.commit()
-    conn.close()
-    logger.info(f"Deleted question with ID: {question_id}")
+    def delete_question(self, question_id: int):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM answer_history WHERE question_id = ?", (question_id,))
+            cursor.execute("DELETE FROM srs_schedule WHERE question_id = ?", (question_id,))
+            cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+            conn.commit()
+            logger.info(f"Deleted question with ID: {question_id}")
+        finally:
+            conn.close()
 
 class ImageProcessor:
     """
@@ -474,7 +361,6 @@ class ImageProcessor:
         try:
             image = Image.open(io.BytesIO(image_bytes))
 
-            # --- START OF CORRECTED PROMPT ---
             prompt = f"""
 You are an expert AI assistant for a medical student. Your task is to analyze an image, classify it, and return a precise JSON object based on the rules below.
 
@@ -505,14 +391,13 @@ First, classify the image into one of three types:
 
 ---
 **IF "LABELED_DIAGRAM", FOLLOW THESE RULES: (This is corrected)**
-1.  **Hide a labelling:** ."Your job is to hide a label and prepare questions based on the labelled part or the condition assoiciated with it. Also Send the image in which you have hidden a labelling."
+1.  **Describe the Image:** Your ONLY job is to describe the image and its labels in text form. For example: "A diagram of the heart showing the aorta, left ventricle, and right atrium."
 2.  **Return this exact JSON format:** This format signals that questions should be generated from the content.
     {{
       "type": "text",
       "data": {{ "content": "A text description of the labeled diagram, including all the labels." }}
     }}
 """
-            # --- END OF CORRECTED PROMPT ---
             
             response = model.generate_content([prompt, image])
             
@@ -525,7 +410,6 @@ First, classify the image into one of three types:
                 
                 parsed_json = json.loads(json_str)
 
-                # Only shuffle options if an MCQ is being directly extracted
                 if parsed_json.get("type") == "mcq" and parsed_json.get("data"):
                     parsed_json["data"] = self._shuffle_options(parsed_json["data"])
                 
@@ -535,8 +419,6 @@ First, classify the image into one of three types:
 
         except Exception as e:
             return None
-
-
 
 
 class NEETPGBot:
@@ -727,6 +609,43 @@ D) {question_data.get('option_d', 'N/A')}
         tag_name = "Untagged" if tag == '__UNTAGGED__' else tag
         description = f"{halt_status.replace('_', ' ')} cards in '{tag_name}'"
         return await self._start_review_session(update, context, questions, description)
+    
+    
+    
+    async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_id = update.effective_user.id
+        file_name = update.message.document.file_name
+        processing_msg = await update.message.reply_text(f"Received {file_name}. Processing now...")
+
+        try:
+            # Download the CSV file content
+            csv_file = await update.message.document.get_file()
+            file_bytes = await csv_file.download_as_bytearray()
+            csv_data = file_bytes.decode('utf-8')
+    
+            # Import questions using the database manager
+            import_stats = self.db.import_questions(user_id, csv_data)
+    
+            # Create summary message
+            summary = f"""
+✅ **Import Complete!**
+
+📊 **Results:**
+• ✅ Imported: {import_stats['imported']}
+• ⏭️ Skipped: {import_stats['skipped']}
+• ❌ Errors: {import_stats['errors']}
+• 📝 Total processed: {import_stats['total']}
+
+All imported questions are scheduled for immediate review!
+            """
+    
+            await processing_msg.edit_text(summary, parse_mode='Markdown')
+    
+        except Exception as e:
+            # Corrected indentation for the following two lines
+            logger.error(f"Error processing CSV: {e}")
+            await processing_msg.edit_text(f"❌ An error occurred: {e}")
+
 
     async def receive_count_for_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_text = context.user_data.pop('image_text', None)
@@ -862,29 +781,7 @@ D) {question_data.get('option_d', 'N/A')}
         else:
             await query.answer("Question deleted.")
 
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = update.effective_user.id
-        conn = sqlite3.connect(self.db.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM user_stats WHERE user_id = ?', (user_id,))
-        stats = cursor.fetchone()
-        if not stats:
-            await update.message.reply_text("📊 No stats yet. Answer some questions first!")
-            conn.close()
-            return
-        total = stats['total_questions']
-        correct = stats['correct_answers']
-        wrong = stats['wrong_answers']
-        current_streak = stats['current_streak']
-        best_streak = stats['best_streak']
-        accuracy = (correct / total * 100) if total > 0 else 0
-        cursor.execute('SELECT COUNT(*) FROM srs_schedule WHERE user_id = ? AND next_review <= ?', (user_id, datetime.now()))
-        due_count = cursor.fetchone()[0]
-        stats_text = f"📊 **Your Progress**\n\n📈 **Performance:**\n• Total: {total}\n• Correct: {correct} \n• Wrong: {wrong}\n• Accuracy: {accuracy:.1f}%\n\n🔥 **Streaks:**\n• Current: {current_streak}\n• Best: {best_streak}\n\n📅 **Due for review:** {due_count}"
-        conn.close()
-        await update.message.reply_text(stats_text, parse_mode='Markdown')
-
+    
     async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         try:
@@ -923,6 +820,20 @@ D) {question_data.get('option_d', 'N/A')}
         await update.message.reply_text("Operation cancelled.")
         return ConversationHandler.END
 
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        stats = self.db.get_user_stats(user_id)
+
+        msg = (
+            "📊 **Your Study Stats:**\n"
+            f"• Total questions answered: {stats['total_questions']}\n"
+            f"• Correct answers: {stats['correct_answers']}\n"
+            f"• Wrong answers: {stats['wrong_answers']}\n"
+            f"• Current streak: {stats['current_streak']}\n"
+            f"• Best streak: {stats['best_streak']}"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
 
 
 app = Flask(__name__)
@@ -948,7 +859,7 @@ def main():
         
         # CRITICAL: Add command handlers FIRST (they should have priority)
         application.add_handler(CommandHandler("start", bot_instance.start_command))
-        application.add_handler(CommandHandler("stats", bot_instance.stats_command))
+        application.add_handler(CommandHandler("stats", bot_instance.stats_command))    
         application.add_handler(CommandHandler("export", bot_instance.export_command))
         application.add_handler(CommandHandler("import", bot_instance.import_command))
         
