@@ -796,11 +796,25 @@ All imported questions are scheduled for immediate review!
                 caption="📤 Here are your exported questions!"
             )
         except Exception as e:
-            logger.error(f"Export error: {e}")
+            logger.error(f"Export error: {e}", exc_info=True)
             await update.message.reply_text("❌ Export failed.")
     
-    async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text("Ready to import! Please send your .csv file as a document.\n\nMake sure it has the columns: 'Question', 'Option A', 'Option B', 'Option C', 'Option D', 'Correct Option'.")
+    async def import_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle the /import command to start CSV import process"""
+        await update.message.reply_text(
+            "📥 **CSV Import**\n\n"
+            "Please send your CSV file with the following columns:\n"
+            "• Question\n"
+            "• Option A, Option B, Option C, Option D\n"
+            "• Correct Option (A, B, C, or D)\n"
+            "• Explanation (optional)\n"
+            "• Tags (optional)\n"
+            "• Subject (optional)\n"
+            "• Source Image ID (optional)\n\n"
+            "Send your CSV file now:",
+            parse_mode='Markdown'
+        )
+        return self.WAITING_FOR_CSV
 
     async def receive_csv_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         file_name = update.message.document.file_name
